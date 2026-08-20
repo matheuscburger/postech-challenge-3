@@ -41,22 +41,6 @@ format:
 
 
 
-## Download Data from storage system
-.PHONY: sync_data_down
-sync_data_down:
-	aws s3 sync s3://alfabetizacao-data-lake-gold/data/ \
-		data/ 
-	
-
-## Upload Data to storage system
-.PHONY: sync_data_up
-sync_data_up:
-	aws s3 sync data/ \
-		s3://alfabetizacao-data-lake-gold/data 
-	
-
-
-
 ## Set up Python interpreter environment
 .PHONY: create_environment
 create_environment:
@@ -71,7 +55,7 @@ create_environment:
 #################################################################################
 
 
-## Make dataset
+## Run local Medallion pipeline (INEP -> raw -> bronze -> silver -> gold)
 .PHONY: data
 data: requirements
 	$(PYTHON_INTERPRETER) -m src.preprocessing.prepare
