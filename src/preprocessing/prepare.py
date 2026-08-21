@@ -1,8 +1,9 @@
-"""CLI that runs the local Medallion pipeline: download -> bronze -> silver -> gold."""
+"""CLI that runs the local Medallion pipelines: download -> bronze -> silver -> gold."""
 
 import typer
 
-from src.preprocessing.inep.run import run_pipeline
+from src.preprocessing.fundeb.run import run_pipeline as run_fundeb
+from src.preprocessing.inep.run import run_pipeline as run_inep
 
 app = typer.Typer()
 
@@ -15,8 +16,9 @@ def main(
         help="Reuse files already present in data/external and data/raw.",
     ),
 ):
-    """Ingest INEP data and materialize Gold tables under data/processed."""
-    run_pipeline(skip_download=skip_download)
+    """Ingest INEP and FUNDEB data and materialize Gold tables under data/processed."""
+    run_inep(skip_download=skip_download)
+    run_fundeb(skip_download=skip_download)
 
 
 if __name__ == "__main__":
