@@ -55,7 +55,7 @@ create_environment:
 #################################################################################
 
 
-## Run local Medallion pipeline (INEP -> raw -> bronze -> silver -> gold)
+## Run local Medallion pipelines (INEP + FUNDEB + Censo Escolar -> bronze -> silver -> gold)
 .PHONY: data
 data: requirements
 	$(PYTHON_INTERPRETER) -m src.preprocessing.prepare
