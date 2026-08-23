@@ -48,7 +48,7 @@ def write_parquet_partitioned(
             continue
         try:
             key = int(key)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             pass
         part_dir = path / f"{partition_col}={key}"
         if part_dir.exists():

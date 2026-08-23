@@ -2,6 +2,7 @@
 
 import typer
 
+from src.preprocessing.censoescolar.run import run_pipeline as run_censoescolar
 from src.preprocessing.fundeb.run import run_pipeline as run_fundeb
 from src.preprocessing.inep.run import run_pipeline as run_inep
 
@@ -16,9 +17,10 @@ def main(
         help="Reuse files already present in data/external and data/raw.",
     ),
 ):
-    """Ingest INEP and FUNDEB data and materialize Gold tables under data/processed."""
+    """Ingest INEP, FUNDEB and Censo Escolar data into data/processed."""
     run_inep(skip_download=skip_download)
     run_fundeb(skip_download=skip_download)
+    run_censoescolar(skip_download=skip_download)
 
 
 if __name__ == "__main__":
