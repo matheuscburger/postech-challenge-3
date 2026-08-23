@@ -1,10 +1,6 @@
 # postech-challenge-3
 
-
-
 Tech Challenge da fase 3 da Postech AI Scientist na FIAP.
-
-
 
 Alunos:
 
@@ -14,16 +10,49 @@ Matheus C. Bürger
 
 Matheus Candido
 
+## Pipeline de dados (local, pandas)
+
+A fase 3 reutiliza o pipeline Medallion da fase 2 **sem AWS**. Os jobs Glue/S3
+foram reescritos em pandas e gravam no layout cookiecutter:
+
+| Fase 2 (S3) | Fase 3 (disco) |
+|---|---|
+| `s3://raw/zip/` | `data/external/{ano}/` (ZIPs do INEP) |
+| `s3://raw/extracted/{ano}/` | `data/raw/{ano}/` |
+| `s3://bronze/{entidade}/` | `data/interim/bronze/{entidade}/` |
+| `s3://silver/{tabela}/` | `data/interim/silver/{tabela}/` |
+| `s3://gold/{tabela}/` | `data/processed/{tabela}/` |
+
+Tabelas Gold:
+
+- `indicadores_municipio` — taxa, meta, distância e atingimento por município
+- `indicadores_uf` — o mesmo recorte por UF
+- `aluno_contexto` — microdados com contexto municipal e `label_alfabetizado`
+
+O dicionário `PAPEIS_ALUNO_CONTEXTO` em `src/preprocessing/inep/roles.py` marca
+`proficiencia` e `gap_proficiencia` como **vazamento** — não usar como feature.
+
+
+### Como gerar os dados
+
+```bash
+python -m pip install -r requirements.txt
+make data
+```
+
+
 ## Organização do Projeto
 
 ```
 ├── Makefile           <- Makefile with convenience commands like `make data` or `make train`
 ├── README.md          <- The top-level README for developers using this project.
 ├── data
-│   ├── external       <- Data from third party sources.
-│   ├── interim        <- Intermediate data that has been transformed.
-│   ├── processed      <- The final, canonical data sets for modeling.
-│   └── raw            <- The original, immutable data dump.
+│   ├── external       <- ZIPs originais do INEP
+│   ├── interim
+│   │   ├── bronze     <- Contrato estrutural (Parquet)
+│   │   └── silver     <- Dados conformados (Parquet)
+│   ├── processed      <- Tabelas Gold para modelagem
+│   └── raw            <- CSV/XLSX extraídos da fonte
 │
 ├── docs               <- A default mkdocs project; see www.mkdocs.org for details
 │
@@ -33,7 +62,7 @@ Matheus Candido
 │                         the creator's initials, and a short `-` delimited description, e.g.
 │                         `1.0-jqp-initial-data-exploration`.
 │
-├── pyproject.toml     <- Project configuration file with package metadata for 
+├── pyproject.toml     <- Project configuration file with package metadata for
 │                         src and configuration for tools like black
 │
 ├── references         <- Data dictionaries, manuals, and all other explanatory materials.
@@ -50,13 +79,23 @@ Matheus Candido
     │
     ├── __init__.py             <- Makes src a Python module
     │
-    ├── config.py               <- Store useful variables and configuration
+    ├── config.py               <- Paths do projeto e constantes INEP
     │
-    ├── preprocessing           <- Load data and sklearn preprocessing Pipeline
+    ├── preprocessing           <- I/O genérico, sklearn preprocessor e pipeline INEP
     │   ├── __init__.py
-    │   ├── load.py             <- Load CSV/Parquet from raw/external
+    │   ├── io.py               <- Parquet particionado, apply_schema
+    │   ├── load.py             <- Load CSV/Parquet from raw/processed
     │   ├── pipeline.py         <- ColumnTransformer factory (impute/encode/scale)
-    │   └── prepare.py          <- CLI to prepare processed datasets
+    │   ├── prepare.py          <- CLI (delega para inep.run_pipeline)
+    │   └── inep/               <- Pipeline Medallion INEP Alfabetização
+    │       ├── download.py     <- Download INEP + unzip seletivo
+    │       ├── schemas.py      <- Contratos Bronze
+    │       ├── bronze.py       <- CSV/XLSX -> Parquet
+    │       ├── silver.py       <- Conformação semântica
+    │       ├── gold.py         <- Tabelas analíticas
+    │       ├── quality.py      <- Checks de qualidade
+    │       ├── roles.py        <- Papéis de colunas para ML
+    │       └── run.py          <- Orquestrador download -> gold
     │
     ├── modeling
     │   ├── __init__.py

@@ -16,10 +16,18 @@ INTERIM_DATA_DIR = DATA_DIR / "interim"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 EXTERNAL_DATA_DIR = DATA_DIR / "external"
 
+BRONZE_DATA_DIR = INTERIM_DATA_DIR / "bronze"
+SILVER_DATA_DIR = INTERIM_DATA_DIR / "silver"
+
 MODELS_DIR = PROJ_ROOT / "models"
 
 REPORTS_DIR = PROJ_ROOT / "reports"
 FIGURES_DIR = REPORTS_DIR / "figures"
+
+# INEP Alfabetização pipeline
+ANOS = (2023, 2024, 2025)
+CORTE_PROFICIENCIA = 743
+MAX_DOWNLOAD_ATTEMPTS = 5
 
 # If tqdm is installed, configure loguru with tqdm.write
 # https://github.com/Delgan/loguru/issues/135

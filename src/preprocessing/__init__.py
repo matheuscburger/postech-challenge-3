@@ -1,1 +1,1 @@
-"""Data loading, feature prep, and sklearn preprocessing pipeline."""
+"""Data loading, generic I/O, sklearn preprocessing, and INEP pipeline."""

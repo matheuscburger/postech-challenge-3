@@ -1,13 +1,15 @@
-awscli
 ipython
 jupyterlab
 loguru
 matplotlib
 notebook
 numpy
+openpyxl
 pandas
 pip
+pyarrow
 python-dotenv
+requests
 ruff
 scikit-learn
 tqdm
