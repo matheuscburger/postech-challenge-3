@@ -1,0 +1,41 @@
+{
+  "camada": "bronze",
+  "assunto": "Atlas do Desenvolvimento Humano no Brasil (IDHM e indicadores associados)",
+  "data_extracao_utc": "2026-08-21T20:14:34.604885+00:00",
+  "autoria_dado_original": "PNUD, IPEA e Fundação João Pinheiro",
+  "site_oficial": "http://www.atlasbrasil.org.br",
+  "observacao": "Dados baixados via réplica pública em CSV (github.com/mauriciocramos/IDHM), pois o ambiente de execução não tem acesso direto a atlasbrasil.org.br. Recomenda-se validar contra o arquivo oficial quando possível.",
+  "arquivos": {
+    "municipal_raw.csv": {
+      "descricao": "Indicadores municipais do Atlas do Desenvolvimento Humano (IDHM e componentes)",
+      "url_replica": "https://raw.githubusercontent.com/mauriciocramos/IDHM/main/municipal.csv",
+      "url_oficial": "http://www.atlasbrasil.org.br/2013/data/rawData/atlas2013_dadosbrutos_pt.xlsx",
+      "linhas": 16695,
+      "colunas": 237
+    },
+    "estadual_raw.csv": {
+      "descricao": "Indicadores estaduais do Atlas do Desenvolvimento Humano",
+      "url_replica": "https://raw.githubusercontent.com/mauriciocramos/IDHM/main/estadual.csv",
+      "url_oficial": "http://www.atlasbrasil.org.br/2013/data/rawData/atlas2013_dadosbrutos_pt.xlsx",
+      "linhas": 81,
+      "colunas": 235
+    },
+    "dicionario_raw.csv": {
+      "descricao": "Dicionário de dados: nome, definição, categoria e subcategoria de cada indicador",
+      "url_replica": "https://raw.githubusercontent.com/mauriciocramos/IDHM/main/dicionario.csv",
+      "url_oficial": "http://www.atlasbrasil.org.br",
+      "linhas": 237,
+      "colunas": 7
+    }
+  },
+  "cobertura": {
+    "anos": [
+      1991,
+      2000,
+      2010
+    ],
+    "granularidade": "município",
+    "unidade_federativa": "todas as 27 UFs"
+  },
+  "regra_camada_bronze": "Nenhuma transformação de regra de negócio deve ser aplicada aqui. Limpeza, renomeação de colunas, filtros e joins ficam na camada silver."
+}
