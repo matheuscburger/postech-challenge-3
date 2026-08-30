@@ -1,4 +1,17 @@
-"""Gold layer: business table for IBGE municipal population."""
+"""Gold layer: business table for IBGE municipal context.
+
+Uma linha por ``(ano, id_municipio)``, com as duas medições que a API do IBGE
+entrega: ``populacao_residente`` (série, agregado 6579) e ``area_km2``
+(atributo estrutural do Censo 2022, replicado na janela).
+
+A tabela guarda só medições independentes — nada calculável a partir de outra
+coluna dela. ``porte_municipio`` era faixa de ``populacao_residente`` e
+``variacao_populacional_pct`` era o delta dessa mesma coluna; as duas saíram e
+reaparecem na Gold analítica, junto da densidade (população ÷ área).
+
+Em 2023 o IBGE não publicou estimativa municipal: essas linhas existem, com
+``area_km2`` preenchida e ``populacao_residente`` NULA. Ver ``schemas``.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +25,9 @@ from src.preprocessing.ibge.quality import CHECKS_GOLD, checar_qualidade
 from src.preprocessing.ibge.schemas import (
     ANOS_IBGE,
     ENTIDADE_POPULACAO,
-    FAIXAS_PORTE,
     GOLD_COLS,
     MEDIDA_AREA,
+    MEDIDA_POPULACAO,
     SILVER_COLS,
 )
 from src.preprocessing.io import read_parquet, write_parquet_partitioned
@@ -28,39 +41,6 @@ def add_gold_metadata(df: pd.DataFrame, ts) -> pd.DataFrame:
     return df
 
 
-def _porte_municipio(populacao: pd.Series) -> pd.Series:
-    """Classifica o município em faixas populacionais de baixa cardinalidade."""
-    out = pd.Series(pd.NA, index=populacao.index, dtype="string")
-    valores = pd.to_numeric(populacao, errors="coerce")
-    conhecido = valores.notna()
-    for minimo, maximo, rotulo in FAIXAS_PORTE:
-        faixa = conhecido & (valores >= minimo)
-        if maximo is not None:
-            faixa &= valores < maximo
-        out.loc[faixa] = rotulo
-    return out
-
-
-def _variacao_populacional(df: pd.DataFrame) -> pd.Series:
-    """Variação percentual da população em relação ao ano anterior do mesmo município.
-
-    Nula no primeiro ano da janela: não há base de comparação dentro do recorte.
-    """
-    ordenado = df.sort_values(["id_municipio", "ano"])
-    anterior = ordenado.groupby("id_municipio")["populacao_residente"].shift(1)
-    ano_anterior = ordenado.groupby("id_municipio")["ano"].shift(1)
-
-    # Cada condição é reduzida a bool puro antes de combinar: as colunas vêm de Parquet
-    # com dtypes nullable (Int64), e um NA sobrevivendo até o `&` levanta
-    # "boolean value of NA is ambiguous".
-    def _mascara(condicao: pd.Series) -> pd.Series:
-        return condicao.fillna(False).astype(bool)
-
-    comparavel = _mascara((ordenado["ano"] - ano_anterior) == 1) & _mascara(anterior.gt(0))
-    variacao = (ordenado["populacao_residente"] / anterior - 1) * 100
-    return variacao.where(comparavel).round(2).reindex(df.index)
-
-
 def transform_populacao(silver: pd.DataFrame, gold_ts) -> pd.DataFrame:
     faltando = [c for c in SILVER_COLS if c not in silver.columns]
     if faltando:
@@ -72,11 +52,9 @@ def transform_populacao(silver: pd.DataFrame, gold_ts) -> pd.DataFrame:
     df["populacao_residente"] = (
         pd.to_numeric(df["populacao_residente"], errors="coerce").round(0).astype("Int64")
     )
-    # Área fica em km² com 3 casas — é atributo estrutural do município (Censo 2022) e
-    # entra aqui só como insumo: a densidade por ano é derivada na engenharia de features.
+    # Área em km² com 3 casas — atributo estrutural do município (Censo 2022),
+    # insumo da densidade, que é derivada na engenharia de features.
     df[MEDIDA_AREA] = pd.to_numeric(df[MEDIDA_AREA], errors="coerce").round(3)
-    df["porte_municipio"] = _porte_municipio(df["populacao_residente"])
-    df["variacao_populacional_pct"] = _variacao_populacional(df)
 
     return add_gold_metadata(df[GOLD_COLS], gold_ts)
 
@@ -92,8 +70,15 @@ def run_gold() -> None:
     write_parquet_partitioned(gold, PROCESSED_DATA_DIR / ENTITY, "ano", overwrite_entity=True)
     logger.info("{} gravada. Total: {:,}", ENTITY, len(gold))
 
-    for rotulo, n in gold["porte_municipio"].value_counts(dropna=False).items():
-        logger.info("  porte {:>16} : {:,}", str(rotulo), n)
+    for ano, grupo in gold.groupby("ano", dropna=True):
+        com_pop = int(grupo[MEDIDA_POPULACAO].notna().sum())
+        logger.info(
+            "  {}: {:,} municípios | {:,} com população | {:,} sem estimativa",
+            ano,
+            len(grupo),
+            com_pop,
+            len(grupo) - com_pop,
+        )
     logger.info(
         "  área km²: min {:,.3f} | mediana {:,.1f} | max {:,.1f} | nulos {:,}",
         gold[MEDIDA_AREA].min(),

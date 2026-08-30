@@ -217,6 +217,7 @@ def run_silver() -> None:
                     "ano": pd.to_numeric(base["NU_ANO_AVALIACAO"], errors="coerce").astype(
                         "Int64"
                     ),
+                    "id_uf": pd.to_numeric(base["CO_UF"], errors="coerce").astype("Int64"),
                     "id_municipio": base["CO_MUNICIPIO"].astype("string").str.strip().str.zfill(7),
                     "id_escola": base["ID_ESCOLA"].astype("string").str.strip(),
                     "id_aluno": base["ID_ALUNO"].astype("string").str.strip(),

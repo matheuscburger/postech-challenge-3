@@ -20,7 +20,8 @@ from src.preprocessing.ibge.download import caminho_serie
 from src.preprocessing.ibge.schemas import (
     API_JOBS,
     SCHEMA_SERIE_LONGA,
-    SENTINELAS_SIDRA,
+    SENTINELA_ZERO,
+    SENTINELAS_AUSENTE,
     ApiJob,
 )
 from src.preprocessing.io import (
@@ -57,15 +58,76 @@ def _exigir(obj: Any, chave: str, contexto: str) -> Any:
     return obj[chave]
 
 
+# Junta os rótulos quando o agregado cruza mais de uma classificação.
+SEPARADOR_CLASSIFICACAO = " | "
+
+_SEM_CLASSIFICACAO = {
+    "CO_CLASSIFICACAO": None,
+    "NO_CLASSIFICACAO": None,
+    "CO_CATEGORIA": None,
+    "NO_CATEGORIA": None,
+}
+
+
+def _categoria_do_resultado(resultado: dict, entidade: str) -> dict:
+    """Extrai a categoria de um bloco ``resultados``.
+
+    A API aninha ``categoria`` como {id: nome} com um único par por classificação.
+    Um bloco pode trazer VÁRIAS classificações quando o agregado cruza dimensões —
+    o 10295 cruza sexo × cor ou raça × grupo de idade. Nesse caso os rótulos viram
+    strings compostas; o que continua sendo erro é uma classificação trazer mais de
+    uma categoria no mesmo bloco, porque aí o valor seria ambíguo.
+    """
+    classificacoes = resultado.get("classificacoes") or []
+    if not classificacoes:
+        return dict(_SEM_CLASSIFICACAO)
+
+    partes: list[tuple[str, str, str, str]] = []
+    for cls in classificacoes:
+        categoria = cls.get("categoria") or {}
+        if len(categoria) != 1:
+            raise AssertionError(
+                f"{entidade}: bloco de classificação {cls.get('nome')!r} com "
+                f"{len(categoria)} categorias; esperava exatamente 1. Recebido: {categoria}"
+            )
+        cat_id, cat_nome = next(iter(categoria.items()))
+        partes.append((str(cls.get("id")), str(cls.get("nome")), str(cat_id), str(cat_nome)))
+
+    if len(partes) == 1:
+        cls_id, cls_nome, cat_id, cat_nome = partes[0]
+        return {
+            "CO_CLASSIFICACAO": cls_id,
+            "NO_CLASSIFICACAO": cls_nome,
+            "CO_CATEGORIA": cat_id,
+            "NO_CATEGORIA": cat_nome,
+        }
+
+    # Cruzamento de dimensões (o 10295 cruza sexo × cor ou raça × grupo de idade).
+    # As quatro colunas viram rótulos compostos, na ordem em que a API devolveu.
+    # A Silver não casa por nome nesse caso: com uma categoria por classificação a
+    # resposta tem uma célula por município, e o job entra por ``pivotar``.
+    return {
+        "CO_CLASSIFICACAO": SEPARADOR_CLASSIFICACAO.join(p[0] for p in partes),
+        "NO_CLASSIFICACAO": SEPARADOR_CLASSIFICACAO.join(p[1] for p in partes),
+        "CO_CATEGORIA": SEPARADOR_CLASSIFICACAO.join(p[2] for p in partes),
+        "NO_CATEGORIA": SEPARADOR_CLASSIFICACAO.join(p[3] for p in partes),
+    }
+
+
 def normalizar_resposta(payload: Any, ano: int, entidade: str) -> pd.DataFrame:
     """Achata a resposta da API de agregados numa tabela longa.
 
     Formato esperado (API de agregados v3)::
 
         [{"id": "...", "variavel": "...", "unidade": "...",
-          "resultados": [{"classificacoes": [],
+          "resultados": [{"classificacoes": [{"id": "1", "nome": "Situação do domicílio",
+                                              "categoria": {"2": "Urbana"}}],
                           "series": [{"localidade": {"id", "nivel", "nome"},
                                       "serie": {"2024": "22853"}}]}]}]
+
+    ``resultados`` traz um bloco por categoria. Sem classificação a lista vem vazia e
+    as colunas CO_/NO_CLASSIFICACAO e CO_/NO_CATEGORIA saem nulas — o contrato é o
+    mesmo nos dois casos.
     """
     if not isinstance(payload, list):
         recebido = sorted(payload) if isinstance(payload, dict) else type(payload).__name__
@@ -89,6 +151,7 @@ def normalizar_resposta(payload: Any, ano: int, entidade: str) -> pd.DataFrame:
         no_unidade = bloco.get("unidade")
 
         for resultado in _exigir(bloco, "resultados", ctx):
+            classificacao = _categoria_do_resultado(resultado, entidade)
             for serie in _exigir(resultado, "series", f"{ctx}/resultados"):
                 localidade = _exigir(serie, "localidade", f"{ctx}/series")
                 valores = _exigir(serie, "serie", f"{ctx}/series")
@@ -104,6 +167,7 @@ def normalizar_resposta(payload: Any, ano: int, entidade: str) -> pd.DataFrame:
                         "CO_VARIAVEL": id_variavel,
                         "NO_VARIAVEL": no_variavel,
                         "NO_UNIDADE": no_unidade,
+                        **classificacao,
                         "VL_MEDIDA": valores[alvo],
                     }
                 )
@@ -113,15 +177,31 @@ def normalizar_resposta(payload: Any, ano: int, entidade: str) -> pd.DataFrame:
     return pd.DataFrame(linhas)
 
 
-def _log_sentinelas(entidade: str, ano: int, bruto: pd.Series) -> None:
-    """Conta os valores especiais do SIDRA antes do cast, para não sumirem em silêncio."""
+def resolver_sentinelas(entidade: str, ano: int, bruto: pd.Series) -> pd.Series:
+    """Traduz os valores especiais do SIDRA antes do cast numérico.
+
+    ``-`` vira **zero**: é uma medição, não uma ausência. Os demais viram nulo, que é
+    o que ``pd.to_numeric(errors="coerce")`` faria de qualquer jeito — a diferença é
+    que aqui isso fica declarado, e contado no log.
+    """
     texto = bruto.astype("string").str.strip()
-    achados = {s: int((texto == s).sum()) for s in SENTINELAS_SIDRA if s}
-    achados = {k: v for k, v in achados.items() if v}
-    if achados:
-        logger.warning(
-            "{} {}: valores especiais do SIDRA convertidos em nulo -> {}", entidade, ano, achados
+
+    zeros = int((texto == SENTINELA_ZERO).sum())
+    ausentes = {s: int((texto == s).sum()) for s in SENTINELAS_AUSENTE if s}
+    ausentes = {k: v for k, v in ausentes.items() if v}
+
+    if zeros:
+        logger.info(
+            "{} {}: {:,} valor(es) '-' do SIDRA lidos como ZERO (medição, não ausência).",
+            entidade,
+            ano,
+            zeros,
         )
+    if ausentes:
+        logger.warning(
+            "{} {}: valores especiais do SIDRA convertidos em nulo -> {}", entidade, ano, ausentes
+        )
+    return texto.mask(texto == SENTINELA_ZERO, "0")
 
 
 def bronze_api(job: ApiJob, ingestion_ts) -> None:
@@ -139,7 +219,7 @@ def bronze_api(job: ApiJob, ingestion_ts) -> None:
 
         payload = json.loads(caminho.read_text(encoding="utf-8"))
         bruto = normalizar_resposta(payload, ano, job.entidade)
-        _log_sentinelas(job.entidade, ano, bruto["VL_MEDIDA"])
+        bruto["VL_MEDIDA"] = resolver_sentinelas(job.entidade, ano, bruto["VL_MEDIDA"])
 
         df = apply_schema(bruto, SCHEMA_SERIE_LONGA)
         df["_source_file"] = str(caminho)

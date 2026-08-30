@@ -29,11 +29,16 @@ def _violations_expr(df: pd.DataFrame, nome: str) -> pd.Series:
         )
     if nome == "meta_ausente_em_ano_alvo":
         return df["ano"].isin([2024, 2025]) & df["meta"].isna()
-    if nome == "atingiu_meta_incoerente":
-        previsto = (df["taxa_alfabetizacao"] - df["meta"]) >= 0
-        return df["meta"].notna() & (previsto != df["atingiu_meta"])
     if nome == "label_incoerente_com_corte":
-        return (df["proficiencia"] >= CORTE_PROFICIENCIA) != (df["label_alfabetizado"] == 1)
+        # Runs on Silver, the last layer where ``proficiencia`` still exists.
+        # Gold drops it: the cut-off score is the label in disguise.
+        prof = pd.to_numeric(df["proficiencia"], errors="coerce")
+        label = df["alfabetizado"]
+        avaliavel = prof.notna() & label.notna()
+        return avaliavel & ((prof >= CORTE_PROFICIENCIA) != (label == 1))
+    if nome == "label_nao_binario":
+        label = df["label_alfabetizado"]
+        return label.notna() & ~label.isin([0, 1])
     raise ValueError(f"Expressão de qualidade desconhecida: {nome}")
 
 
@@ -100,19 +105,24 @@ CHECKS_SILVER = {
         {"tipo": "not_null", "coluna": "ano", "critico": True},
         {"tipo": "not_null", "coluna": "id_aluno", "critico": True},
         {"tipo": "not_null", "coluna": "id_municipio", "critico": True},
+        {"tipo": "not_null", "coluna": "id_uf", "critico": False},
+        {"tipo": "not_null", "coluna": "id_escola", "critico": False},
         {"tipo": "regex", "coluna": "id_municipio", "valor": r"^[0-9]{7}$", "critico": True},
         {"tipo": "unique", "coluna": ["ano", "id_aluno"], "critico": True},
         {"tipo": "range", "coluna": "proficiencia", "valor": (0, 1500), "critico": False},
         {"tipo": "expr", "nome": "dependencia_administrativa_invalida", "critico": True},
+        {"tipo": "expr", "nome": "label_incoerente_com_corte", "critico": True},
     ],
 }
 
 CHECKS_GOLD = {
-    "indicadores_municipio": [
+    "municipio": [
         {"tipo": "min_count", "valor": 1, "critico": True},
         {"tipo": "anos", "coluna": "ano", "valor": ANOS_ESPERADOS, "critico": True},
         {"tipo": "not_null", "coluna": "ano", "critico": True},
         {"tipo": "not_null", "coluna": "id_municipio", "critico": True},
+        {"tipo": "not_null", "coluna": "id_uf", "critico": False},
+        {"tipo": "regex", "coluna": "id_municipio", "valor": r"^[0-9]{7}$", "critico": True},
         {"tipo": "unique", "coluna": ["ano", "id_municipio"], "critico": True},
         {"tipo": "range", "coluna": "taxa_alfabetizacao", "valor": (0, 100), "critico": False},
         {"tipo": "range", "coluna": "meta", "valor": (0, 100), "critico": False},
@@ -123,14 +133,14 @@ CHECKS_GOLD = {
             "valor": (0, 100),
             "critico": False,
         },
-        {"tipo": "expr", "nome": "atingiu_meta_incoerente", "critico": True},
     ],
-    "indicadores_uf": [
+    "ufs": [
         {"tipo": "min_count", "valor": 1, "critico": True},
         {"tipo": "anos", "coluna": "ano", "valor": ANOS_ESPERADOS, "critico": True},
         {"tipo": "not_null", "coluna": "ano", "critico": True},
+        {"tipo": "not_null", "coluna": "id_uf", "critico": True},
         {"tipo": "not_null", "coluna": "sigla_uf", "critico": True},
-        {"tipo": "unique", "coluna": ["ano", "sigla_uf"], "critico": True},
+        {"tipo": "unique", "coluna": ["ano", "id_uf"], "critico": True},
         {"tipo": "range", "coluna": "taxa_alfabetizacao", "valor": (0, 100), "critico": False},
         {"tipo": "range", "coluna": "meta", "valor": (0, 100), "critico": False},
         {"tipo": "expr", "nome": "meta_ausente_em_ano_alvo", "critico": False},
@@ -140,17 +150,18 @@ CHECKS_GOLD = {
             "valor": (0, 100),
             "critico": False,
         },
-        {"tipo": "expr", "nome": "atingiu_meta_incoerente", "critico": True},
     ],
-    "aluno_contexto": [
+    "aluno": [
         {"tipo": "min_count", "valor": 1, "critico": True},
         {"tipo": "anos", "coluna": "ano", "valor": ANOS_ESPERADOS, "critico": True},
-        {"tipo": "not_null", "coluna": "id_aluno", "critico": True},
         {"tipo": "not_null", "coluna": "ano", "critico": True},
-        {"tipo": "not_null", "coluna": "proficiencia", "critico": True},
+        {"tipo": "not_null", "coluna": "id_aluno", "critico": True},
+        {"tipo": "not_null", "coluna": "id_municipio", "critico": True},
+        {"tipo": "not_null", "coluna": "id_uf", "critico": True},
+        {"tipo": "not_null", "coluna": "id_escola", "critico": False},
         {"tipo": "not_null", "coluna": "label_alfabetizado", "critico": True},
+        {"tipo": "regex", "coluna": "id_municipio", "valor": r"^[0-9]{7}$", "critico": True},
         {"tipo": "unique", "coluna": ["ano", "id_aluno"], "critico": True},
-        {"tipo": "range", "coluna": "proficiencia", "valor": (0, 1500), "critico": False},
-        {"tipo": "expr", "nome": "label_incoerente_com_corte", "critico": True},
+        {"tipo": "expr", "nome": "label_nao_binario", "critico": True},
     ],
 }

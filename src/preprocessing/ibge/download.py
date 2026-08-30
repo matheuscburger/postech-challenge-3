@@ -24,7 +24,7 @@ import requests
 from requests.exceptions import RequestException
 
 from src.config import EXTERNAL_DATA_DIR, MAX_DOWNLOAD_ATTEMPTS, RAW_DATA_DIR
-from src.preprocessing.ibge.schemas import API_JOBS, ApiJob
+from src.preprocessing.ibge.schemas import API_JOBS, NIVEL_MUNICIPIO, ApiJob, normalizar_nome
 
 API_BASE = "https://servicodados.ibge.gov.br/api/v3/agregados"
 
@@ -56,9 +56,113 @@ def url_periodos(agregado: int) -> str:
     return f"{API_BASE}/{agregado}/periodos"
 
 
-def url_serie(agregado: int, ano: int, variavel: str, nivel: str) -> str:
-    """Monta a rota de série: um pedido só cobre todos os municípios via N6[all]."""
-    return f"{API_BASE}/{agregado}/periodos/{ano}/variaveis/{variavel}?localidades={nivel}[all]"
+def url_serie(
+    agregado: int,
+    ano: int,
+    variavel: str,
+    nivel: str,
+    classificacoes: list[tuple[str, list[str]]] | None = None,
+) -> str:
+    """Monta a rota de série: um pedido só cobre todos os municípios via N6[all].
+
+    ``classificacoes`` são pares (id, [ids de categoria]) já resolvidos por
+    ``classificacoes_do_agregado``. Várias entram no mesmo pedido separadas por ``|``,
+    que é como a API cruza dimensões: ``&classificacao=2[6794]|86[95251]``.
+    """
+    url = f"{API_BASE}/{agregado}/periodos/{ano}/variaveis/{variavel}?localidades={nivel}[all]"
+    partes = [f"{cls}[{','.join(cats)}]" for cls, cats in (classificacoes or []) if cats]
+    if partes:
+        url += "&classificacao=" + "|".join(partes)
+    return url
+
+
+def localizar_por_nome(
+    itens: list[tuple[str, str]], desejado: str
+) -> tuple[str, str, str] | None:
+    """Acha o item cujo nome casa com ``desejado``.
+
+    Devolve ``(id, nome_publicado, tipo)`` com tipo em {"exato", "prefixo"}, ou None.
+    Separar os dois tipos importa: casamento por prefixo é conveniência, mas também é
+    como uma categoria mais específica pode ser escolhida por engano.
+    """
+    alvo = normalizar_nome(desejado)
+    for i, nome in itens:
+        if normalizar_nome(nome) == alvo:
+            return i, nome, "exato"
+    for i, nome in itens:
+        if normalizar_nome(nome).startswith(alvo):
+            return i, nome, "prefixo"
+    return None
+
+
+def _casar_por_nome(itens: list[tuple[str, str]], desejado: str, contexto: str) -> str:
+    """Escolhe o id cujo nome casa com ``desejado``: exato, depois prefixo."""
+    achado = localizar_por_nome(itens, desejado)
+    if achado is None:
+        disponiveis = ", ".join(f"{i}={nome!r}" for i, nome in itens)
+        raise ValueError(f"{contexto}: nada casa com {desejado!r}. Disponíveis: {disponiveis}")
+    id_item, nome_publicado, tipo = achado
+    if tipo == "prefixo":
+        logger.warning(
+            "{}: {!r} casou por PREFIXO com {!r} (id {}). Confirme com --conferir; se não "
+            "for a categoria pretendida, ajuste a constante no schemas.py.",
+            contexto,
+            desejado,
+            nome_publicado,
+            id_item,
+        )
+    return id_item
+
+
+def classificacoes_do_agregado(
+    metadados: dict,
+    agregado: int,
+    declaradas: tuple[tuple[str, tuple[str, ...]], ...],
+) -> list[tuple[str, list[str]]]:
+    """Resolve todas as classificações do job: NOMES -> ids.
+
+    Erra alto e cedo listando o que existe: pegar a categoria errada é o tipo de bug
+    que não aparece no schema nem no total, só no resultado.
+
+    Atenção a um detalhe do SIDRA: "Total" tem id DIFERENTE em cada classificação
+    (6794 em Sexo, 95251 em Cor ou raça, 95253 em Grupo de idade). Por isso cada
+    categoria é resolvida dentro da sua própria classificação.
+    """
+    if not declaradas:
+        return []
+
+    publicadas = metadados.get("classificacoes") or []
+    if not publicadas:
+        pedidas = [nome for nome, _ in declaradas]
+        raise ValueError(
+            f"Agregado {agregado}: metadados sem classificações, mas o job pede "
+            f"{pedidas}. Chaves recebidas: {sorted(metadados)}"
+        )
+
+    pares = [(str(c.get("id")), str(c.get("nome", ""))) for c in publicadas]
+    resolvidas: list[tuple[str, list[str]]] = []
+
+    for nome_classificacao, nomes_categorias in declaradas:
+        cls_id = _casar_por_nome(pares, nome_classificacao, f"Agregado {agregado}: classificação")
+        escolhida = next(c for c in publicadas if str(c.get("id")) == cls_id)
+        categorias = [
+            (str(cat.get("id")), str(cat.get("nome", "")))
+            for cat in escolhida.get("categorias") or []
+        ]
+        ids = [
+            _casar_por_nome(categorias, nome, f"Agregado {agregado}: categoria de {cls_id}")
+            for nome in nomes_categorias
+        ]
+        logger.info(
+            "Agregado {}: classificação {} ({}) | categorias {}",
+            agregado,
+            cls_id,
+            escolhida.get("nome"),
+            dict(zip(ids, nomes_categorias, strict=True)),
+        )
+        resolvidas.append((cls_id, ids))
+
+    return resolvidas
 
 
 def baixar_json(url: str, destino: Path | None, espera: int = 5) -> Any:
@@ -199,12 +303,13 @@ def baixar_dados_ibge() -> None:
 
     for job in API_JOBS:
         logger.info(
-            "{}: agregado {} | períodos {} | nível {} | variável {!r}",
+            "{}: agregado {} | períodos {} | nível {} | variável {!r} | {} classificação(ões)",
             job.entidade,
             job.agregado,
             job.periodos,
             job.nivel,
             job.variavel,
+            len(job.classificacoes),
         )
         _conferir_periodos(job)
         time.sleep(PAUSA_ENTRE_CHAMADAS)
@@ -213,10 +318,13 @@ def baixar_dados_ibge() -> None:
             logger.info(f"Ano {ano}:")
             metadados = carregar_metadados(job.agregado, ano)
             variavel = variavel_do_agregado(metadados, job.agregado, job.variavel)
+            classificacoes = classificacoes_do_agregado(
+                metadados, job.agregado, job.classificacoes
+            )
             time.sleep(PAUSA_ENTRE_CHAMADAS)
 
             payload = baixar_json(
-                url_serie(job.agregado, ano, variavel, job.nivel),
+                url_serie(job.agregado, ano, variavel, job.nivel, classificacoes),
                 caminho_serie(job.entidade, ano),
             )
             _conferir_resposta(job, ano, payload)
@@ -257,20 +365,179 @@ def inspecionar(agregado: int | None = None) -> None:
                 "  variável {:>6} | {} | {}", var.get("id"), var.get("nome"), var.get("unidade")
             )
         for cls in meta.get("classificacoes") or []:
+            categorias = cls.get("categorias") or []
             logger.info(
                 "  classif. {:>6} | {} | {} categoria(s)",
                 cls.get("id"),
                 cls.get("nome"),
-                len(cls.get("categorias") or []),
+                len(categorias),
             )
+            # Os NOMES são o que o schemas.py declara — imprimi-los é o que permite
+            # conferir (e corrigir) as constantes CAT_* sem adivinhar.
+            for cat in categorias:
+                logger.info("      cat {:>8} | {}", cat.get("id"), cat.get("nome"))
         time.sleep(PAUSA_ENTRE_CHAMADAS)
     logger.success("Inspeção concluída.")
+
+
+def url_catalogo() -> str:
+    return API_BASE
+
+
+def procurar(termo: str, nivel: str | None = NIVEL_MUNICIPIO) -> None:
+    """Procura agregados do IBGE pelo NOME, no catálogo inteiro da API.
+
+        python -m src.preprocessing.ibge.download --procurar "rendimento domiciliar"
+
+    Existe porque escolher um agregado é a única etapa em que ainda se depende de
+    saber o número da tabela por fora. O catálogo é a fonte: procurar nele evita
+    tanto o chute quanto a busca no navegador, que devolve tabela de outro Censo.
+
+    ``nivel`` filtra pelos agregados que publicam naquele nível territorial (N6 =
+    município, o único que interessa a este projeto). Passe ``None`` para não filtrar.
+    """
+    payload = baixar_json(url_catalogo(), None)
+    if not isinstance(payload, list):
+        raise ValueError(f"Catálogo em formato inesperado: {type(payload).__name__}")
+
+    alvo = normalizar_nome(termo)
+    achados: list[tuple[str, str, str]] = []
+    for pesquisa in payload:
+        nome_pesquisa = str(pesquisa.get("nome", "?"))
+        for agregado in pesquisa.get("agregados") or []:
+            nome = str(agregado.get("nome", ""))
+            if alvo in normalizar_nome(nome):
+                achados.append((str(agregado.get("id")), nome, nome_pesquisa))
+
+    if not achados:
+        logger.warning("Nenhum agregado com {!r} no nome.", termo)
+        return
+
+    logger.info("{} agregado(s) com {!r} no nome:", len(achados), termo)
+    for id_agregado, nome, pesquisa in achados:
+        logger.info("  {:>6} | {} | {}", id_agregado, pesquisa, nome)
+
+    if nivel:
+        logger.info("")
+        logger.info(
+            "Para ver variáveis, períodos e categorias — e confirmar se publica em {}:",
+            nivel,
+        )
+        logger.info(
+            "  python -m src.preprocessing.ibge.download --inspecionar <id>",
+        )
+
+
+def _conferir_um(
+    rotulo: str, declarado: str, publicados: list[tuple[str, str]], entidade: str
+) -> tuple[str | None, str | None]:
+    """Confere um nome declarado contra os publicados. Devolve (id_resolvido, problema)."""
+    achado = localizar_por_nome(publicados, declarado)
+    if achado is None:
+        candidatos = ", ".join(repr(nome) for _, nome in publicados) or "(nenhum)"
+        logger.error("  FALHA   {:<14} {!r}", rotulo, declarado)
+        logger.error("          publicados: {}", candidatos)
+        return None, f"{entidade}: {rotulo} {declarado!r} não existe no agregado"
+
+    id_item, nome_publicado, tipo = achado
+    if tipo == "exato":
+        logger.info("  OK      {:<14} {!r} -> id {}", rotulo, declarado, id_item)
+        return id_item, None
+
+    logger.warning("  PREFIXO {:<14} {!r}", rotulo, declarado)
+    logger.warning("          publicado: {!r} (id {})", nome_publicado, id_item)
+    return id_item, (
+        f"{entidade}: {rotulo} {declarado!r} casou por prefixo com {nome_publicado!r} "
+        "— confirme se é a categoria pretendida"
+    )
+
+
+def conferir() -> None:
+    """Confere, contra a API, todos os NOMES declarados no schemas.py.
+
+        python -m src.preprocessing.ibge.download --conferir
+
+    Existe porque variável, classificação e categoria são declaradas por NOME, não por
+    id: é isso que evita o acoplamento silencioso a um id que o IBGE republica. O preço
+    é que um nome errado só apareceria no download — este comando antecipa a descoberta
+    e diz exatamente qual constante do schemas.py corrigir.
+    """
+    problemas: list[str] = []
+
+    for job in API_JOBS:
+        ano = job.periodos[0]
+        logger.info("=" * 72)
+        logger.info("{} | agregado {} | período {}", job.entidade, job.agregado, ano)
+        try:
+            meta = carregar_metadados(job.agregado, ano)
+        except (RequestException, RuntimeError, ValueError, OSError) as erro:
+            logger.error("  FALHA   metadados inacessíveis ({})", erro)
+            problemas.append(f"{job.entidade}: metadados do agregado {job.agregado} ({erro})")
+            continue
+
+        variaveis = [
+            (str(v.get("id")), str(v.get("nome", ""))) for v in meta.get("variaveis") or []
+        ]
+        _, problema = _conferir_um("variável", job.variavel, variaveis, job.entidade)
+        if problema:
+            problemas.append(problema)
+
+        publicadas = meta.get("classificacoes") or []
+        pares = [(str(c.get("id")), str(c.get("nome", ""))) for c in publicadas]
+        for nome_classificacao, nomes_categorias in job.classificacoes:
+            cls_id, problema = _conferir_um(
+                "classificação", nome_classificacao, pares, job.entidade
+            )
+            if problema:
+                problemas.append(problema)
+            if cls_id is None:
+                continue
+            escolhida = next(c for c in publicadas if str(c.get("id")) == cls_id)
+            categorias = [
+                (str(c.get("id")), str(c.get("nome", "")))
+                for c in escolhida.get("categorias") or []
+            ]
+            for nome in nomes_categorias:
+                _, problema = _conferir_um("categoria", nome, categorias, job.entidade)
+                if problema:
+                    problemas.append(problema)
+
+        time.sleep(PAUSA_ENTRE_CHAMADAS)
+
+    logger.info("=" * 72)
+    if not problemas:
+        logger.success("Todos os nomes declarados no schemas.py conferem com a API.")
+        return
+
+    logger.error("{} nome(s) a revisar em src/preprocessing/ibge/schemas.py:", len(problemas))
+    for p in problemas:
+        logger.error("  - {}", p)
+    raise SystemExit(1)
+
+
+def _argumento_depois(argv: list[str], flag: str) -> str | None:
+    """Valor logo após ``flag``, se houver."""
+    if flag in argv:
+        i = argv.index(flag) + 1
+        if i < len(argv) and not argv[i].startswith("--"):
+            return argv[i]
+    return None
 
 
 if __name__ == "__main__":
     import sys
 
-    if "--inspecionar" in sys.argv:
-        inspecionar()
+    if "--procurar" in sys.argv:
+        termo = _argumento_depois(sys.argv, "--procurar")
+        if not termo:
+            raise SystemExit(
+                'Uso: python -m src.preprocessing.ibge.download --procurar "rendimento domiciliar"'
+            )
+        procurar(termo)
+    elif "--inspecionar" in sys.argv:
+        alvo = _argumento_depois(sys.argv, "--inspecionar")
+        inspecionar(int(alvo) if alvo else None)
+    elif "--conferir" in sys.argv:
+        conferir()
     else:
         baixar_dados_ibge()
