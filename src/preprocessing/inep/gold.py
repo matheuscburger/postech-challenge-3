@@ -9,11 +9,18 @@ Three tables, one grain each:
 * ``gold/ufs``       — one row per ``(ano, id_uf)``: the same, for the state
   network (``ts_estado`` + ``resultados_e_metas_ufs``).
 
-``gold/aluno`` carries no predictors on purpose. ``proficiencia`` is what
-defines the label, so it (and ``gap_proficiencia``) is leakage; the former
-``ctx_*`` columns were same-year municipal aggregates of the very students
-being predicted, which is leakage of a subtler kind; ``caderno`` is a draw
-that INEP equalizes, so it carries no signal.
+``gold/aluno`` carries almost no predictors on purpose. ``proficiencia`` is
+what defines the label, so it (and ``gap_proficiencia``) is leakage; the
+former ``ctx_*`` columns were same-year municipal aggregates of the very
+students being predicted, which is leakage of a subtler kind; ``caderno`` is
+a draw that INEP equalizes, so it carries no signal.
+
+The one predictor that stays is ``dependencia_administrativa`` (2 = estadual,
+3 = municipal). It names the network the school belongs to, is known long
+before the exam, is not derivable from any other column here, and is not
+constant — so it passes the three tests the others failed. It is also the
+grain at which the Censo Escolar publishes ATU: without it, ``join.join_atu``
+cannot attach municipal averages to the right network.
 
 The municipal and state tables hold only independently measured columns.
 Anything derivable from another column was dropped: ``rede`` was constant
@@ -51,6 +58,7 @@ COLS_ALUNO = [
     "id_municipio",
     "id_escola",
     "id_aluno",
+    "dependencia_administrativa",
     "label_alfabetizado",
 ]
 
@@ -178,7 +186,7 @@ def transform_ufs(silver_uf: pd.DataFrame, silver_meta: pd.DataFrame, gold_ts) -
 
 
 def transform_aluno(silver_alunos: pd.DataFrame, gold_ts) -> pd.DataFrame:
-    """``ts_aluno`` reduced to foreign keys + the target.
+    """``ts_aluno`` reduced to foreign keys, the network, and the target.
 
     Rows without ``proficiencia`` have no defined label, so they are dropped
     here rather than carried into training as nulls.
@@ -193,6 +201,9 @@ def transform_aluno(silver_alunos: pd.DataFrame, gold_ts) -> pd.DataFrame:
             "id_municipio": base["id_municipio"].astype("string"),
             "id_escola": base["id_escola"].astype("string"),
             "id_aluno": base["id_aluno"].astype("string"),
+            "dependencia_administrativa": pd.to_numeric(
+                base["dependencia_administrativa"], errors="coerce"
+            ).astype("Int64"),
             "label_alfabetizado": pd.to_numeric(base["alfabetizado"], errors="coerce").astype(
                 "Int64"
             ),

@@ -162,6 +162,7 @@ CHECKS_GOLD = {
         {"tipo": "not_null", "coluna": "label_alfabetizado", "critico": True},
         {"tipo": "regex", "coluna": "id_municipio", "valor": r"^[0-9]{7}$", "critico": True},
         {"tipo": "unique", "coluna": ["ano", "id_aluno"], "critico": True},
+        {"tipo": "expr", "nome": "dependencia_administrativa_invalida", "critico": True},
         {"tipo": "expr", "nome": "label_nao_binario", "critico": True},
     ],
 }

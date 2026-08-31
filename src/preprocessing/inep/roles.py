@@ -1,10 +1,13 @@
 """Column roles for the INEP Gold tables, consumed by the ML pipeline.
 
-``gold/aluno`` holds no predictors: the public microdata says almost nothing
-about an anonymised student, and everything it does say about the exam
-(``proficiencia``, ``caderno``) is either the label itself or noise. Features
-come from ``features/``, which joins this table to the municipal and state
-tables — and to FUNDEB, Censo Escolar and IBGE — on the keys below.
+``gold/aluno`` holds almost no predictors: the public microdata says little
+about an anonymised student, and most of what it does say about the exam
+(``proficiencia``, ``caderno``) is either the label itself or noise. The
+exception is ``dependencia_administrativa``, a pre-exam attribute of the
+school's network that is also the grain of the Censo Escolar. Everything else
+comes from ``src/preprocessing/join.py``, which joins this table to the
+municipal and state tables — and to FUNDEB, Censo Escolar and IBGE — on the
+keys below, producing ``processed/base_analitica``.
 """
 
 PAPEIS_ALUNO = {
@@ -12,19 +15,20 @@ PAPEIS_ALUNO = {
     "identificador": ["ano", "id_uf", "id_municipio", "id_escola", "id_aluno"],
     "vazamento": [],
     "constante": [],
-    "features": [],
+    "features": ["dependencia_administrativa"],
 }
 
-# How features/ joins each context table onto gold/aluno.
+# How join.py attaches each context table to gold/aluno.
 CHAVES_JOIN = {
     "municipio": ["ano", "id_municipio"],
     "ufs": ["ano", "id_uf"],
 }
 
 # Context columns that describe the exam these very students sat: joining them
-# at the same ``ano`` leaks the answer. features/ must shift them one year
-# (``taxa_alfabetizacao_lag1``, ``delta_taxa``, ``atingiu_meta_lag1``, ...).
-# ``meta`` is exempt: INEP publishes it before the exam.
+# at the same ``ano`` leaks the answer. ``join.py`` shifts them one year
+# (``ctx_inep_mun_taxa_alfabetizacao_lag1`` and friends) and reads this list to
+# decide what to shift, so a new result column added to the Gold tables is
+# lagged automatically. ``meta`` is exempt: INEP publishes it before the exam.
 COLUNAS_LAG_OBRIGATORIO = [
     "taxa_alfabetizacao",
     "media_portugues",
