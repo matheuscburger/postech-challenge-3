@@ -64,17 +64,27 @@ def bronze_csv(entidade: str, arquivo: str, schema: list[tuple[str, str]], inges
         caminho = RAW_DATA_DIR / str(ano) / arquivo
         if not caminho.exists():
             raise FileNotFoundError(f"{arquivo} ({ano}) não encontrado: {caminho}")
-        raw = pd.read_csv(caminho, **CSV_OPTS)
-        raw = _normalize_columns(raw)
-        faltando = [n for n in nomes if n not in raw.columns]
-        if faltando:
-            raise AssertionError(f"{arquivo} ({ano}) sem colunas do contrato: {faltando}")
-        df = apply_schema(raw, schema)
-        df["_source_file"] = str(caminho)
-        df["_ingestion_timestamp"] = ingestion_ts
+        
+        # Leitura em chunks (blocos de 200 mil linhas) para economizar memória RAM
+        chunk_size = 200_000
+        processados = []
+        
+        for raw_chunk in pd.read_csv(caminho, chunksize=chunk_size, **CSV_OPTS):
+            raw_chunk = _normalize_columns(raw_chunk)
+            faltando = [n for n in nomes if n not in raw_chunk.columns]
+            if faltando:
+                raise AssertionError(f"{arquivo} ({ano}) sem colunas do contrato: {faltando}")
+            
+            df_chunk = apply_schema(raw_chunk, schema)
+            df_chunk["_source_file"] = str(caminho)
+            df_chunk["_ingestion_timestamp"] = ingestion_ts
+            processados.append(df_chunk)
+        
+        # Concatena os blocos já limpos e estruturados
+        df = pd.concat(processados, ignore_index=True)
         write_parquet_partitioned(df, dest, "NU_ANO_AVALIACAO")
         logger.info("{} {}: {:,} linhas", entidade, ano, len(df))
-        del df, raw
+        del df, processados
 
 
 def bronze_xlsx(
