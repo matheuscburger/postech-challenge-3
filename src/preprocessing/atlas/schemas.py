@@ -32,6 +32,13 @@ COLUNAS_IDENTIFICACAO = {
 # Indicadores selecionados (nome Base dos Dados -> nome final do projeto).
 # Cada mapeamento foi validado numericamente contra a fonte legada e
 # conferido contra o dicionário oficial de dados (dicionario_raw.csv).
+#
+# Lista expandida em 04/09/2026 com 16 indicadores adicionais, escolhidos
+# para responder diretamente às perguntas de negócio do desafio — em
+# especial "quais municípios apresentam maior risco educacional?" e "quais
+# fatores mais impactam a alfabetização?" — cobrindo saúde da infância,
+# trabalho infantil, frequência escolar por faixa etária e capital
+# educacional dos pais/responsáveis (ver seções abaixo).
 INDICADORES = {
     # Síntese
     "idhm": "idhm",
@@ -50,6 +57,8 @@ INDICADORES = {
     # Renda e desigualdade
     "renda_pc": "renda_per_capita",
     "indice_gini": "indice_gini",
+    "indice_theil": "indice_theil",
+    "razao_10_ricos_40_pobres": "razao_10_ricos_40_pobres",
     # ⚠️ Mapeamento corrigido — conferido contra dicionario_raw.csv:
     #   PPOB (% vulneráveis à pobreza) -> percentual_vulneraveis_pobreza
     #   PMPOB (% pobres) -> percentual_pobres
@@ -57,6 +66,23 @@ INDICADORES = {
     "prop_pobreza": "percentual_pobres",
     "prop_pobreza_extrema": "percentual_extremamente_pobres",
     "prop_vulner_pobreza": "percentual_vulneraveis_pobreza",
+    "prop_pobreza_criancas": "percentual_pobres_criancas",
+    "prop_pobreza_extrema_criancas": "percentual_extremamente_pobres_criancas",
+    "prop_vulner_pobreza_criancas": "percentual_vulneraveis_pobreza_criancas",
+    # Saúde da infância
+    "mortalidade_1": "mortalidade_ate_1_ano",
+    "mortalidade_5": "mortalidade_ate_5_anos",
+    # Trabalho infantil e vulnerabilidade da criança
+    "taxa_atividade_10_14": "taxa_trabalho_infantil_10a14",
+    "taxa_mulheres_com_filho_10_14": "taxa_maes_10a14",
+    "taxa_mulheres_chefe_filho_15m": "taxa_maes_chefes_familia",
+    # Frequência escolar por faixa etária
+    "taxa_criancas_fora_escola_4_5": "taxa_fora_escola_4a5",
+    "taxa_criancas_fora_escola_6_14": "taxa_fora_escola_6a14",
+    "taxa_freq_liquida_fundamental": "taxa_frequencia_liquida_fundamental",
+    # Capital educacional dos pais/responsáveis
+    "taxa_dom_vulner_sem_fund": "taxa_domicilios_vulneraveis_sem_fundamental",
+    "taxa_criancas_dom_sem_fund": "taxa_criancas_em_domicilios_sem_fundamental",
     # Infraestrutura / habitação
     "taxa_agua_encanada": "percentual_domicilios_agua",
     "taxa_energia_eletrica": "percentual_domicilios_energia",

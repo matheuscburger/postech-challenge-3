@@ -83,20 +83,43 @@ PREFIXO_INEP = {"municipio": "ctx_inep_mun_", "ufs": "ctx_inep_uf_"}
 
 # --- Atlas do Desenvolvimento Humano ---------------------------------------
 ATLAS_ENTIDADE = "atlas_desenvolvimento_humano"
+# Lista expandida em 04/09/2026 (ver src/preprocessing/atlas/schemas.py para
+# a fonte e a justificativa de cada indicador novo — foco em saúde da
+# infância, trabalho infantil, frequência escolar por faixa etária e
+# capital educacional dos pais/responsáveis).
 ATLAS_COLS = [
     "idhm",
     "idhm_educacao",
     "idhm_renda",
     "idhm_longevidade",
+    "taxa_analfabetismo_11a14",
+    "taxa_analfabetismo_15a17",
     "taxa_analfabetismo_15mais",
     "taxa_frequencia_6a14",
+    "taxa_frequencia_4a5",
+    "taxa_frequencia_0a3",
     "expectativa_anos_estudo",
     "taxa_fundamental_incompleto",
     "renda_per_capita",
     "indice_gini",
+    "indice_theil",
+    "razao_10_ricos_40_pobres",
     "percentual_pobres",
     "percentual_extremamente_pobres",
     "percentual_vulneraveis_pobreza",
+    "percentual_pobres_criancas",
+    "percentual_extremamente_pobres_criancas",
+    "percentual_vulneraveis_pobreza_criancas",
+    "mortalidade_ate_1_ano",
+    "mortalidade_ate_5_anos",
+    "taxa_trabalho_infantil_10a14",
+    "taxa_maes_10a14",
+    "taxa_maes_chefes_familia",
+    "taxa_fora_escola_4a5",
+    "taxa_fora_escola_6a14",
+    "taxa_frequencia_liquida_fundamental",
+    "taxa_domicilios_vulneraveis_sem_fundamental",
+    "taxa_criancas_em_domicilios_sem_fundamental",
     "percentual_domicilios_agua",
     "percentual_domicilios_energia",
     "taxa_densidade_domiciliar",
