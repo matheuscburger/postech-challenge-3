@@ -178,7 +178,7 @@ XLSX_JOBS = (
     ),
     (
         "metas_municipios",
-        "resultados_e_metas_municipios_2025_v2.xlsx",
+        "resultados_e_metas_municipios_2025_3.xlsx",
         "Divulgação Alfabet Municipio",
         SCHEMA_METAS_MUN_2025,
         2025,

@@ -15,13 +15,13 @@ Matheus Candido
 A fase 3 reutiliza o pipeline Medallion da fase 2 **sem AWS**. Os jobs Glue/S3
 foram reescritos em pandas e gravam no layout cookiecutter:
 
-| Fase 2 (S3) | Fase 3 (disco) |
-|---|---|
-| `s3://raw/zip/` | `data/external/{ano}/` (ZIPs do INEP) |
-| `s3://raw/extracted/{ano}/` | `data/raw/{ano}/` |
-| `s3://bronze/{entidade}/` | `data/interim/bronze/{entidade}/` |
-| `s3://silver/{tabela}/` | `data/interim/silver/{tabela}/` |
-| `s3://gold/{tabela}/` | `data/processed/{tabela}/` |
+| Fase 2 (S3)                   | Fase 3 (disco)                          |
+| ----------------------------- | --------------------------------------- |
+| `s3://raw/zip/`             | `data/external/{ano}/` (ZIPs do INEP) |
+| `s3://raw/extracted/{ano}/` | `data/raw/{ano}/`                     |
+| `s3://bronze/{entidade}/`   | `data/interim/bronze/{entidade}/`     |
+| `s3://silver/{tabela}/`     | `data/interim/silver/{tabela}/`       |
+| `s3://gold/{tabela}/`       | `data/processed/{tabela}/`            |
 
 Tabelas Gold:
 
@@ -34,14 +34,12 @@ Os dicionários `PAPEIS_ALUNO_CONTEXTO` e `PAPEIS_ALUNO_JOINED` em
 `src/preprocessing/roles.py` marcam `proficiencia` e `gap_proficiencia` como
 **vazamento** — não usar como feature.
 
-
 ### Como gerar os dados
 
 ```bash
 python -m pip install -r requirements.txt
 make data
 ```
-
 
 ## Organização do Projeto
 

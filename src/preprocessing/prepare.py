@@ -4,6 +4,7 @@ import typer
 
 from src.preprocessing.censoescolar.run import run_pipeline as run_censoescolar
 from src.preprocessing.fundeb.run import run_pipeline as run_fundeb
+from src.preprocessing.ibge.run import run_pipeline as run_ibge
 from src.preprocessing.inep.run import run_pipeline as run_inep
 from src.preprocessing.join import run_join
 
@@ -18,10 +19,11 @@ def main(
         help="Reuse files already present in data/external and data/raw.",
     ),
 ):
-    """Ingest INEP, FUNDEB and Censo Escolar data into data/processed."""
+    """Ingest INEP, FUNDEB, Censo Escolar and IBGE data into data/processed."""
     run_inep(skip_download=skip_download)
     run_fundeb(skip_download=skip_download)
     run_censoescolar(skip_download=skip_download)
+    run_ibge(skip_download=skip_download)
     run_join()
 
 
