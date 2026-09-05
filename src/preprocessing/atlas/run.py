@@ -1,18 +1,22 @@
-"""Orchestrate the Atlas do Desenvolvimento Humano pipeline: bronze -> silver -> gold.
+"""Orchestrate the Atlas do Desenvolvimento Humano pipeline: download -> bronze -> silver -> gold.
 
-Não há etapa de download automatizado (ver bronze.py) — os arquivos de
-origem devem estar em data/external/atlas_desenvolvimento_humano/ antes
-de rodar.
+O passo de download automatiza o que dá (fonte legada, GitHub) e verifica
+o que precisa ser manual (Base dos Dados) — ver download.py para detalhes.
 """
 
 from loguru import logger
 
 from src.preprocessing.atlas.bronze import run_bronze
+from src.preprocessing.atlas.download import baixar_dados_atlas
 from src.preprocessing.atlas.gold import run_gold
 from src.preprocessing.atlas.silver import run_silver
 
 
-def run_pipeline() -> None:
+def run_pipeline(*, skip_download: bool = False) -> None:
+    if skip_download:
+        logger.info("Pulando download; usando dados locais em data/external.")
+    else:
+        baixar_dados_atlas()
     run_bronze()
     run_silver()
     run_gold()
@@ -20,4 +24,6 @@ def run_pipeline() -> None:
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    import sys
+
+    run_pipeline(skip_download="--skip-download" in sys.argv)
