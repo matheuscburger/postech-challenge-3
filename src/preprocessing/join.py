@@ -75,6 +75,7 @@ IBGE_COL_MATCH = "area_km2"
 PREFIXO_INEP = {"municipio": "ctx_inep_mun_", "ufs": "ctx_inep_uf_"}
 
 # --- Atlas -----------------------------------------------------------------
+ENTIDADE_ATLAS = "atlas_desenvolvimento_humano"
 ATLAS_COLUNAS = [
     "idhm",
     "idhm_educacao",
@@ -212,8 +213,19 @@ def join_atlas(alunos: pd.DataFrame) -> pd.DataFrame:
     O Atlas está fixo no ano-base 2010 (Censo Demográfico) — o join é feito
     apenas por id_municipio (não por ano); o mesmo valor de 2010 é usado
     para todos os anos de ``alunos``.
+
+    Se a Gold Parquet ainda não existir (pipeline Atlas fora do prepare), o
+    join é pulado e ``alunos`` volta intacto — sem colunas ``ctx_atlas_*``.
     """
-    atlas = read_parquet(PROCESSED_DATA_DIR / "atlas_desenvolvimento_humano")
+    path = PROCESSED_DATA_DIR / ENTIDADE_ATLAS
+    if not path.exists() or not any(path.rglob("*.parquet")):
+        logger.warning(
+            "Atlas ausente em {}; pulando join_atlas (ctx_atlas_* não entram na base).",
+            path,
+        )
+        return alunos
+
+    atlas = read_parquet(path)
 
     atlas_join = (
         atlas.rename(columns=ATLAS_RENAME)
