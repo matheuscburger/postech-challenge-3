@@ -8,7 +8,8 @@ Cada função recebe o DataFrame de alunos e devolve o mesmo enriquecido:
 
 Regras:
   - preservar 1 linha por aluno (merge how="left", validate="m:1");
-  - prefixar colunas novas com a fonte (ex.: ctx_atu_*, ctx_ibge_*);
+  - prefixar colunas novas com a fonte (ex.: ctx_atu_*, ctx_ibge_*, ctx_atlas_*,
+    ctx_fundeb_*);
   - logar a taxa de match dentro da própria função.
 
 Defasagem
@@ -28,6 +29,20 @@ também por ano.
 O IBGE entra sem defasagem: nada ali mede a prova. Área e os indicadores do
 Censo 2022 são atributos estruturais do município, e a estimativa populacional
 de 1º de julho sai antes da aplicação.
+
+O Atlas do Desenvolvimento Humano e o FUNDEB (NSE) também entram sem
+defasagem, pelo mesmo motivo do IBGE: nenhum dos dois mede a prova destes
+alunos.
+  - Atlas: indicadores estruturais fixos no ano-base 2010 (Censo Demográfico).
+    O join usa só ``id_municipio`` — o mesmo valor de 2010 é usado para todos
+    os anos de ``aluno`` (2023-2025), assumindo que indicadores
+    socioeconômicos municipais mudam devagar.
+  - FUNDEB: Nível Socioeconômico (NSE) por ente federado. Só cobre 2024-2025;
+    o ano de 2023 recebe o valor de 2024 como proxy (NSE muda pouco ano a
+    ano) — a coluna ``ctx_fundeb_nse_municipio_proxy_2023`` marca quais
+    linhas usaram o proxy. O NSE da UF entra como coluna separada
+    (``ctx_fundeb_nse_uf``), além do NSE do município — não é usado como
+    fallback.
 """
 
 from __future__ import annotations
@@ -58,18 +73,41 @@ JOIN_KEYS = ["ano", "id_municipio", "_dep_atu"]
 
 # --- IBGE ------------------------------------------------------------------
 CHAVES_IBGE = ["ano", "id_municipio"]
-# nome_municipio, id_uf e sigla_uf já chegam pela Gold do INEP: trazê-los de
-# novo só criaria _x/_y no merge.
 IDENT_IBGE = ["nome_municipio", "id_uf", "sigla_uf"]
 COLS_IBGE = [c for c in IBGE_GOLD_COLS if c not in {*CHAVES_IBGE, *IDENT_IBGE}]
 IBGE_RENAME = {c: f"ctx_ibge_{c}" for c in COLS_IBGE}
-# Em 2023 o IBGE não publicou estimativa municipal e a população é nula por
-# decisão da Gold. Medir o match nela confundiria ausência declarada com falha
-# de join, então a régua é a área, presente em todos os anos.
 IBGE_COL_MATCH = "area_km2"
 
 # --- INEP ------------------------------------------------------------------
 PREFIXO_INEP = {"municipio": "ctx_inep_mun_", "ufs": "ctx_inep_uf_"}
+
+# --- Atlas do Desenvolvimento Humano ---------------------------------------
+ATLAS_ENTIDADE = "atlas_desenvolvimento_humano"
+ATLAS_COLS = [
+    "idhm",
+    "idhm_educacao",
+    "idhm_renda",
+    "idhm_longevidade",
+    "taxa_analfabetismo_15mais",
+    "taxa_frequencia_6a14",
+    "expectativa_anos_estudo",
+    "taxa_fundamental_incompleto",
+    "renda_per_capita",
+    "indice_gini",
+    "percentual_pobres",
+    "percentual_extremamente_pobres",
+    "percentual_vulneraveis_pobreza",
+    "percentual_domicilios_agua",
+    "percentual_domicilios_energia",
+    "taxa_densidade_domiciliar",
+]
+ATLAS_RENAME = {c: f"ctx_atlas_{c}" for c in ATLAS_COLS}
+ATLAS_COL_MATCH = ATLAS_RENAME["idhm"]
+
+# --- FUNDEB (NSE) ------------------------------------------------------------
+FUNDEB_ENTIDADE = "nse_entes_federados"
+ANO_PROXY_FUNDEB = 2023
+ANO_BASE_PROXY_FUNDEB = 2024
 
 
 def _logar_match(rotulo: str, out: pd.DataFrame, coluna: str) -> None:
@@ -147,10 +185,104 @@ def join_atu(alunos: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def join_atlas(alunos: pd.DataFrame) -> pd.DataFrame:
+    """Left-join dos indicadores municipais do Atlas do Desenvolvimento Humano.
+
+    Sem defasagem: nada aqui mede a prova. O Atlas está fixo no ano-base 2010
+    (Censo Demográfico) — o join usa só ``id_municipio``, e o mesmo valor de
+    2010 é replicado para todos os anos de ``alunos``.
+    """
+    atlas = read_parquet(PROCESSED_DATA_DIR / ATLAS_ENTIDADE)
+    atlas_join = (
+        atlas.loc[:, ["id_municipio", *ATLAS_COLS]]
+        .rename(columns=ATLAS_RENAME)
+        .copy()
+    )
+    atlas_join["id_municipio"] = atlas_join["id_municipio"].astype("string").str.zfill(7)
+
+    out = alunos.copy()
+    out["id_municipio"] = out["id_municipio"].astype("string").str.zfill(7)
+    out = out.merge(atlas_join, on="id_municipio", how="left", validate="m:1")
+
+    _logar_match("Atlas", out, ATLAS_COL_MATCH)
+    return out
+
+
+def _preparar_nse_municipio(nse: pd.DataFrame) -> pd.DataFrame:
+    """Filtra tipo_ente == 'municipio' e aplica o proxy 2023 <- 2024."""
+    nse_mun = nse.loc[nse["tipo_ente"] == "municipio"].copy()
+    nse_mun["id_municipio"] = nse_mun["codigo_ente"].astype("Int64").astype("string").str.zfill(7)
+
+    base = nse_mun[["ano", "id_municipio", "valor_nse", "ponderador_nse"]].copy()
+    base["nse_proxy"] = False
+
+    proxy = base.loc[base["ano"] == ANO_BASE_PROXY_FUNDEB].copy()
+    proxy["ano"] = ANO_PROXY_FUNDEB
+    proxy["nse_proxy"] = True
+
+    resultado = pd.concat([base, proxy], ignore_index=True)
+    return resultado.rename(
+        columns={
+            "valor_nse": "ctx_fundeb_nse_municipio",
+            "ponderador_nse": "ctx_fundeb_ponderador_nse_municipio",
+            "nse_proxy": "ctx_fundeb_nse_municipio_proxy_2023",
+        }
+    )
+
+
+def _preparar_nse_uf(nse: pd.DataFrame) -> pd.DataFrame:
+    """Filtra tipo_ente == 'uf' e aplica o proxy 2023 <- 2024.
+
+    ``codigo_ente`` já é Int64 para UF (ex.: 11, 35) — mesmo tipo de
+    ``id_uf`` em ``gold/aluno``, então não há zero-padding aqui (diferente de
+    município, que é sempre string de 7 dígitos).
+    """
+    nse_uf = nse.loc[nse["tipo_ente"] == "uf"].copy()
+    nse_uf["id_uf"] = nse_uf["codigo_ente"].astype("Int64")
+
+    base = nse_uf[["ano", "id_uf", "valor_nse", "ponderador_nse"]].copy()
+    base["nse_proxy"] = False
+
+    proxy = base.loc[base["ano"] == ANO_BASE_PROXY_FUNDEB].copy()
+    proxy["ano"] = ANO_PROXY_FUNDEB
+    proxy["nse_proxy"] = True
+
+    resultado = pd.concat([base, proxy], ignore_index=True)
+    return resultado.rename(
+        columns={
+            "valor_nse": "ctx_fundeb_nse_uf",
+            "ponderador_nse": "ctx_fundeb_ponderador_nse_uf",
+            "nse_proxy": "ctx_fundeb_nse_uf_proxy_2023",
+        }
+    )
+
+
+def join_fundeb(alunos: pd.DataFrame) -> pd.DataFrame:
+    """Left-join do NSE do FUNDEB (município e UF) em ``alunos``.
+
+    Sem defasagem: o NSE é uma classificação socioeconômica do ente, não uma
+    medição da prova. O FUNDEB só cobre 2024-2025; o ano de 2023 recebe o
+    valor de 2024 como proxy — ver ``ctx_fundeb_nse_*_proxy_2023``.
+    """
+    nse = read_parquet(PROCESSED_DATA_DIR / FUNDEB_ENTIDADE)
+    nse_mun = _preparar_nse_municipio(nse)
+    nse_uf = _preparar_nse_uf(nse)
+
+    out = alunos.copy()
+    out["id_municipio"] = out["id_municipio"].astype("string").str.zfill(7)
+
+    out = out.merge(nse_mun, on=["ano", "id_municipio"], how="left", validate="m:1")
+    out = out.merge(nse_uf, on=["ano", "id_uf"], how="left", validate="m:1")
+
+    _logar_match("FUNDEB município", out, "ctx_fundeb_nse_municipio")
+    _logar_match("FUNDEB UF", out, "ctx_fundeb_nse_uf")
+    return out
+
+
 def join_ibge(alunos: pd.DataFrame) -> pd.DataFrame:
     """Left-join do contexto municipal do IBGE (``gold/populacao_municipios``).
 
-    Sem defasagem: nada aqui mede a prova. Em 2023 o IBGE não publicou
+    Sem defasagem: nada ali mede a prova. Em 2023 o IBGE não publicou
     estimativa municipal, então ``ctx_ibge_populacao_residente`` fica nula
     naquelas linhas — ausência declarada pela Gold, não falha de match.
     """
@@ -164,12 +296,7 @@ def join_ibge(alunos: pd.DataFrame) -> pd.DataFrame:
 
 
 def join_inep_municipio(alunos: pd.DataFrame) -> pd.DataFrame:
-    """Left-join do contexto municipal do INEP (``gold/municipio``).
-
-    ``meta`` entra no mesmo ano — o INEP a publica antes da prova. Taxa,
-    média, participação e nível entram do ano anterior: no ano corrente eles
-    agregam a prova destes mesmos alunos.
-    """
+    """Left-join do contexto municipal do INEP (``gold/municipio``)."""
     return _join_inep(alunos, "municipio", "INEP município")
 
 
@@ -181,6 +308,8 @@ def join_inep_uf(alunos: pd.DataFrame) -> pd.DataFrame:
 # Registro ordenado dos joins.
 JOINS = (
     join_atu,
+    join_atlas,
+    join_fundeb,
     join_ibge,
     join_inep_municipio,
     join_inep_uf,
@@ -197,8 +326,6 @@ def run_join() -> None:
     for join_fn in JOINS:
         logger.info("Aplicando {}...", join_fn.__name__)
         alunos = join_fn(alunos)
-        # validate="m:1" já barra o fan-out do lado direito; isto pega o resto
-        # (filtro indevido, chave nula, join que virou inner por engano).
         if len(alunos) != linhas:
             raise AssertionError(
                 f"{join_fn.__name__} alterou a contagem de linhas: {linhas:,} -> {len(alunos):,}"
