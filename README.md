@@ -39,6 +39,80 @@ python -m pip install -r requirements.txt
 make data
 ```
 
+## Atlas do Desenvolvimento Humano
+
+Diferente das outras fontes (INEP, FUNDEB, Censo Escolar, IBGE), o Atlas do
+Desenvolvimento Humano **não tem download automatizado** — o site oficial
+(`atlasbrasil.org.br`) bloqueia acesso automatizado (scraping), então os
+arquivos de origem precisam ser baixados manualmente uma vez, antes de
+rodar o pipeline.
+
+### De onde baixar
+
+Os dados vêm de duas fontes, cruzadas e validadas entre si (ver
+`src/preprocessing/atlas/schemas.py` para detalhes da validação):
+
+1. **Fonte primária — Base dos Dados** (dataset `mundo_onu.adh`):
+   - Acesse [basedosdados.org/dataset/mundo-onu-adh](https://basedosdados.org/dataset/mundo-onu-adh)
+   - Baixe a tabela **`municipio`** (indicadores municipais — IDHM e ~230
+     variáveis socioeconômicas)
+   - Salve como `municipio_raw.csv`
+
+2. **Fonte legada — apenas para nome do município** (a Base dos Dados só
+   traz o código IBGE, não o nome):
+   - [github.com/mauriciocramos/IDHM](https://github.com/mauriciocramos/IDHM)
+   - Baixe `municipal.csv`
+   - Renomeie para `municipal_raw.csv`
+
+### Onde colocar
+
+Crie a pasta (se não existir) e coloque os dois arquivos exatamente aqui:
+
+```
+data/external/atlas_desenvolvimento_humano/
+├── municipio_raw.csv
+└── municipal_raw.csv
+```
+
+```bash
+mkdir -p data/external/atlas_desenvolvimento_humano
+# depois, mova/copie os dois arquivos baixados para essa pasta
+```
+
+### Como rodar
+
+```bash
+python -m pip install -r requirements.txt
+
+# 1. Gera a tabela Gold do Atlas (bronze -> silver -> gold)
+python -m src.preprocessing.atlas.run
+
+# 2. (Se ainda não rodou) Gera as outras tabelas Gold necessárias para o join
+python -m src.preprocessing.inep.run
+python -m src.preprocessing.fundeb.run
+python -m src.preprocessing.censoescolar.run
+python -m src.preprocessing.ibge.run
+
+# 3. Junta tudo (aluno + Atlas + FUNDEB + Censo Escolar + IBGE + INEP) em base_analitica
+python -m src.preprocessing.join
+```
+
+O resultado final fica em `data/processed/base_analitica/` (particionado
+por ano), pronto para a etapa de modelagem.
+
+### O que o Atlas adiciona à `base_analitica`
+
+35 indicadores municipais (prefixo `ctx_atlas_`), cobrindo IDHM e seus 3
+subíndices, analfabetismo por faixa etária, saúde da infância (mortalidade
+até 1 e 5 anos), trabalho infantil, frequência escolar por idade,
+vulnerabilidade familiar, renda e desigualdade. Ver a lista completa em
+`src/preprocessing/atlas/schemas.py` (dicionário `INDICADORES`).
+
+⚠️ **Limitação conhecida**: o Atlas está fixo no ano-base **2010** (Censo
+Demográfico) — o mesmo valor é usado para todos os anos de `aluno`
+(2023-2025), assumindo que indicadores socioeconômicos municipais mudam
+devagar. Documentar isso na seção de Limitações do relatório final.
+
 ## Organização do Projeto
 
 ```
