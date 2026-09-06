@@ -8,7 +8,7 @@ Cada função recebe o DataFrame de alunos e devolve o mesmo enriquecido:
 
 Regras:
   - preservar 1 linha por aluno (merge how="left", validate="m:1");
-  - prefixar colunas novas com a fonte (ex.: ctx_atu_*, ctx_ibge_*, ctx_atlas_*, ctx_fundeb_*);
+  - prefixar colunas novas com a fonte (ex.: ctx_atu_*, ctx_ibge_*);
   - logar a taxa de match dentro da própria função.
 
 Defasagem
@@ -27,10 +27,8 @@ também por ano.
 
 O IBGE entra sem defasagem: nada ali mede a prova. Área e os indicadores do
 Censo 2022 são atributos estruturais do município, e a estimativa populacional
-de 1º de julho sai antes da aplicação.
-
-O Atlas (ano-base 2010) e o FUNDEB (NSE) também entram sem defasagem de prova:
-são atributos estruturais / socioeconômicos, não resultados da avaliação.
+de 1º de julho sai antes da aplicação. O FUNDEB entra pela mesma porta, com a
+ressalva de 2023 descrita em ``join_fundeb``.
 """
 
 from __future__ import annotations
@@ -71,34 +69,16 @@ IBGE_RENAME = {c: f"ctx_ibge_{c}" for c in COLS_IBGE}
 # de join, então a régua é a área, presente em todos os anos.
 IBGE_COL_MATCH = "area_km2"
 
+# --- FUNDEB ----------------------------------------------------------------
+ENTIDADE_FUNDEB = "nse_entes_federados"
+CHAVES_FUNDEB_MUNICIPIO = ["ano", "id_municipio"]
+CHAVES_FUNDEB_UF = ["ano", "id_uf"]
+COL_NSE = "valor_nse"
+FUNDEB_NSE_MUNICIPIO = "ctx_fundeb_nse_municipio"
+FUNDEB_NSE_UF = "ctx_fundeb_nse_uf"
+
 # --- INEP ------------------------------------------------------------------
 PREFIXO_INEP = {"municipio": "ctx_inep_mun_", "ufs": "ctx_inep_uf_"}
-
-# --- Atlas -----------------------------------------------------------------
-ENTIDADE_ATLAS = "atlas_desenvolvimento_humano"
-ATLAS_COLUNAS = [
-    "idhm",
-    "idhm_educacao",
-    "idhm_renda",
-    "idhm_longevidade",
-    "taxa_analfabetismo_15mais",
-    "taxa_frequencia_6a14",
-    "expectativa_anos_estudo",
-    "taxa_fundamental_incompleto",
-    "renda_per_capita",
-    "indice_gini",
-    "percentual_pobres",
-    "percentual_extremamente_pobres",
-    "percentual_vulneraveis_pobreza",
-    "percentual_domicilios_agua",
-    "percentual_domicilios_energia",
-    "taxa_densidade_domiciliar",
-]
-ATLAS_RENAME = {c: f"ctx_atlas_{c}" for c in ATLAS_COLUNAS}
-
-# --- FUNDEB ----------------------------------------------------------------
-ANO_PROXY_FUNDEB = 2023
-ANO_BASE_PROXY_FUNDEB = 2024
 
 
 def _logar_match(rotulo: str, out: pd.DataFrame, coluna: str) -> None:
@@ -192,6 +172,88 @@ def join_ibge(alunos: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _nse_por_ente(nse: pd.DataFrame, tipo: str, chave: str, destino: str) -> pd.DataFrame:
+    """Recorta o NSE de um tipo de ente e converte ``codigo_ente`` na chave do projeto.
+
+    O FUNDEB publica município e UF na mesma tabela, distinguidos por ``tipo_ente``,
+    e com o código IBGE num campo só. Aqui ele vira ``id_municipio`` (string de 7
+    dígitos) ou ``id_uf`` (Int64) — os formatos que ``gold/aluno`` usa.
+
+    Trocar os dois tipos NÃO passa em silêncio, e isso foi conferido: o pandas
+    recusa ``merge`` entre chave ``string`` e ``Int64`` com ValueError. É o
+    ``astype`` consistente das Golds que compra essa proteção — com ``object`` em
+    vez de ``string`` o pandas coagiria e o merge casaria zero linhas calado.
+    """
+    recorte = nse.loc[nse["tipo_ente"] == tipo].copy()
+    if chave == "id_municipio":
+        recorte[chave] = recorte["codigo_ente"].astype("Int64").astype("string").str.zfill(7)
+    else:
+        recorte[chave] = pd.to_numeric(recorte["codigo_ente"], errors="coerce").astype("Int64")
+    return recorte.loc[:, ["ano", chave, COL_NSE]].rename(columns={COL_NSE: destino})
+
+
+def join_fundeb(alunos: pd.DataFrame) -> pd.DataFrame:
+    """Left-join do Nível Socioeconômico do FUNDEB, por município e por UF.
+
+    Sem defasagem: o NSE é um índice socioeconômico do ente federado, calculado
+    para ratear o fundo. Não agrega, nem em parte, o resultado da avaliação destes
+    alunos, então não há alvo voltando pela janela.
+
+    **2023 fica nulo, de propósito.** O FUNDEB só publica NSE para 2024 e 2025.
+    Preencher 2023 com o valor de 2024 daria ao modelo um número que ninguém
+    mediu, com cara de medição. É exatamente a decisão que a Gold do IBGE já
+    tomou para ``populacao_residente`` em 2023, e a razão é a mesma: nulo é a
+    afirmação honesta de que o dado não existe. Quem quiser a hipótese do proxy
+    que a teste explicitamente no ``features/``, com a flag à vista.
+
+    Só ``valor_nse`` entra. ``ponderador_nse`` é rescala LINEAR dele
+    (correlação de Pearson -1,0 exata; o resíduo de 5e-7 é o arredondamento em 6
+    casas da fonte), logo é coluna derivada — a mesma regra que tirou
+    ``porte_municipio`` e ``variacao_populacional_pct`` da Gold do IBGE. Levar as
+    duas daria ao modelo duas colunas perfeitamente colineares.
+
+    Em 2024 o match municipal fica em 98,8%, e os que faltam são dois, nominais:
+    **Brasília (5300108)** e **Fernando de Noronha (2605459)**. Nenhum dos dois
+    opera rede municipal própria — o DF entra no FUNDEB só como UF (código 53) e
+    Noronha é distrito estadual de Pernambuco. Ausência correta, não falha de
+    chave; os alunos deles ficam com ``ctx_fundeb_nse_uf`` preenchido e o
+    municipal nulo.
+    """
+    nse = read_parquet(PROCESSED_DATA_DIR / ENTIDADE_FUNDEB)
+
+    # A taxa de match do FUNDEB é 0% em 2023 e isso é o esperado, não um join
+    # quebrado. Ao contrário do IBGE — onde sobra o ``area_km2`` para servir de
+    # régua —, aqui a tabela inteira não existe naquele ano, então não há coluna
+    # honesta para medir. Declarar a ausência ANTES do log de match é o que separa
+    # "não existe dado" de "o merge falhou" para quem lê a saída depois.
+    anos_com_nse = set(pd.to_numeric(nse["ano"], errors="coerce").dropna().astype(int))
+    anos_alunos = set(pd.to_numeric(alunos["ano"], errors="coerce").dropna().astype(int))
+    sem_nse = sorted(anos_alunos - anos_com_nse)
+    if sem_nse:
+        logger.info(
+            "FUNDEB não publica NSE para {} — essas linhas ficam nulas por decisão, "
+            "sem proxy. Match 0% nesses anos é ausência declarada.",
+            sem_nse,
+        )
+
+    out = alunos.merge(
+        _nse_por_ente(nse, "municipio", "id_municipio", FUNDEB_NSE_MUNICIPIO),
+        on=CHAVES_FUNDEB_MUNICIPIO,
+        how="left",
+        validate="m:1",
+    )
+    out = out.merge(
+        _nse_por_ente(nse, "uf", "id_uf", FUNDEB_NSE_UF),
+        on=CHAVES_FUNDEB_UF,
+        how="left",
+        validate="m:1",
+    )
+
+    _logar_match("FUNDEB município", out, FUNDEB_NSE_MUNICIPIO)
+    _logar_match("FUNDEB UF", out, FUNDEB_NSE_UF)
+    return out
+
+
 def join_inep_municipio(alunos: pd.DataFrame) -> pd.DataFrame:
     """Left-join do contexto municipal do INEP (``gold/municipio``).
 
@@ -207,115 +269,14 @@ def join_inep_uf(alunos: pd.DataFrame) -> pd.DataFrame:
     return _join_inep(alunos, "ufs", "INEP UF")
 
 
-def join_atlas(alunos: pd.DataFrame) -> pd.DataFrame:
-    """Left-join indicadores municipais do Atlas do Desenvolvimento Humano em ``alunos``.
-
-    O Atlas está fixo no ano-base 2010 (Censo Demográfico) — o join é feito
-    apenas por id_municipio (não por ano); o mesmo valor de 2010 é usado
-    para todos os anos de ``alunos``.
-
-    Se a Gold Parquet ainda não existir (pipeline Atlas fora do prepare), o
-    join é pulado e ``alunos`` volta intacto — sem colunas ``ctx_atlas_*``.
-    """
-    path = PROCESSED_DATA_DIR / ENTIDADE_ATLAS
-    if not path.exists() or not any(path.rglob("*.parquet")):
-        logger.warning(
-            "Atlas ausente em {}; pulando join_atlas (ctx_atlas_* não entram na base).",
-            path,
-        )
-        return alunos
-
-    atlas = read_parquet(path)
-
-    atlas_join = (
-        atlas.rename(columns=ATLAS_RENAME)
-        .loc[:, ["id_municipio", *ATLAS_RENAME.values()]]
-        .copy()
-    )
-    atlas_join["id_municipio"] = atlas_join["id_municipio"].astype(str).str.zfill(7)
-
-    out = alunos.copy()
-    out["id_municipio"] = out["id_municipio"].astype(str).str.zfill(7)
-    out = out.merge(atlas_join, on="id_municipio", how="left", validate="m:1")
-
-    _logar_match("Atlas", out, ATLAS_RENAME["idhm"])
-    return out
-
-
-def _preparar_nse_municipio(nse: pd.DataFrame) -> pd.DataFrame:
-    nse_mun = nse.loc[nse["tipo_ente"] == "municipio"].copy()
-    nse_mun["id_municipio"] = nse_mun["codigo_ente"].astype("Int64").astype(str).str.zfill(7)
-
-    base = nse_mun[["ano", "id_municipio", "valor_nse", "ponderador_nse"]].copy()
-    base["nse_proxy"] = False
-
-    proxy = base.loc[base["ano"] == ANO_BASE_PROXY_FUNDEB].copy()
-    proxy["ano"] = ANO_PROXY_FUNDEB
-    proxy["nse_proxy"] = True
-
-    resultado = pd.concat([base, proxy], ignore_index=True)
-    return resultado.rename(
-        columns={
-            "valor_nse": "ctx_fundeb_nse_municipio",
-            "ponderador_nse": "ctx_fundeb_ponderador_nse_municipio",
-            "nse_proxy": "ctx_fundeb_nse_municipio_proxy_2023",
-        }
-    )
-
-
-def _preparar_nse_uf(nse: pd.DataFrame) -> pd.DataFrame:
-    nse_uf = nse.loc[nse["tipo_ente"] == "uf"].copy()
-    nse_uf["id_uf"] = nse_uf["codigo_ente"].astype("Int64").astype(str).str.zfill(2)
-
-    base = nse_uf[["ano", "id_uf", "valor_nse", "ponderador_nse"]].copy()
-    base["nse_proxy"] = False
-
-    proxy = base.loc[base["ano"] == ANO_BASE_PROXY_FUNDEB].copy()
-    proxy["ano"] = ANO_PROXY_FUNDEB
-    proxy["nse_proxy"] = True
-
-    resultado = pd.concat([base, proxy], ignore_index=True)
-    return resultado.rename(
-        columns={
-            "valor_nse": "ctx_fundeb_nse_uf",
-            "ponderador_nse": "ctx_fundeb_ponderador_nse_uf",
-            "nse_proxy": "ctx_fundeb_nse_uf_proxy_2023",
-        }
-    )
-
-
-def join_fundeb(alunos: pd.DataFrame) -> pd.DataFrame:
-    """Left-join do NSE do FUNDEB (município e UF) em ``alunos``.
-
-    O FUNDEB só cobre 2024-2025; o ano de 2023 recebe o valor de 2024 como
-    proxy (NSE muda pouco ano a ano) — coluna ctx_fundeb_nse_*_proxy_2023
-    marca quais linhas usaram o proxy. O NSE da UF entra como coluna
-    separada, além do NSE do município (não é usado como fallback).
-    """
-    nse = read_parquet(PROCESSED_DATA_DIR / "nse_entes_federados")
-    nse_mun = _preparar_nse_municipio(nse)
-    nse_uf = _preparar_nse_uf(nse)
-
-    out = alunos.copy()
-    out["id_municipio"] = out["id_municipio"].astype(str).str.zfill(7)
-    out["id_uf"] = out["id_uf"].astype(str).str.zfill(2)
-
-    out = out.merge(nse_mun, on=["ano", "id_municipio"], how="left", validate="m:1")
-    out = out.merge(nse_uf, on=["ano", "id_uf"], how="left", validate="m:1")
-
-    _logar_match("FUNDEB município", out, "ctx_fundeb_nse_municipio")
-    _logar_match("FUNDEB UF", out, "ctx_fundeb_nse_uf")
-    return out
-
-
-# Registro ordenado dos joins.
+# Registro ordenado dos joins. Os três primeiros são contexto sem defasagem;
+# os do INEP vêm por último porque são os únicos que mexem com o ano.
 JOINS = (
     join_atu,
     join_ibge,
+    join_fundeb,
     join_inep_municipio,
     join_inep_uf,
-    join_atlas,
-    join_fundeb,
 )
 
 

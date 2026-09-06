@@ -9,11 +9,37 @@ Three tables, one grain each:
 * ``gold/ufs``       — one row per ``(ano, id_uf)``: the same, for the state
   network (``ts_estado`` + ``resultados_e_metas_ufs``).
 
-``gold/aluno`` carries almost no predictors on purpose. ``proficiencia`` is
-what defines the label, so it (and ``gap_proficiencia``) is leakage; the
-former ``ctx_*`` columns were same-year municipal aggregates of the very
-students being predicted, which is leakage of a subtler kind; ``caderno`` is
-a draw that INEP equalizes, so it carries no signal.
+``gold/aluno`` carries almost no predictors on purpose. The former ``ctx_*``
+columns were same-year municipal aggregates of the very students being
+predicted, which is leakage of a subtler kind; ``caderno`` is a draw that INEP
+equalizes, so it carries no signal.
+
+**A proficiência voltou — como ALVO, não como feature.**
+-------------------------------------------------------
+Ela saiu daqui na primeira versão, e o motivo estava certo: como feature de um
+classificador de ``label_alfabetizado``, ela é vazamento perfeito, porque o
+rótulo é literalmente ``proficiencia >= CORTE_PROFICIENCIA`` (conferido: bate em
+100,0000% das linhas). Isso não mudou.
+
+O que mudou foi a pergunta. A EDA de 04-05/09/2026 mediu quanto a dicotomização
+custa, e o número é grande: com as mesmas features e o mesmo grão, o teto do
+oráculo é **+6,4 pontos de acurácia** para a binária contra **R² de 19,5%** para
+a contínua. O sinal é o mesmo; a acurácia é que não consegue expressá-lo. Pior,
+o corte 743 cai no percentil 41,6 — o pico da densidade —, então errar a nota
+por 10 pontos (0,2 desvio) já troca a classe de 17% dos alunos.
+
+Então ``label_proficiencia`` entra como **segundo alvo**, para modelagem por
+regressão. As duas colunas de alvo são MUTUAMENTE EXCLUDENTES:
+
+    modelo de regressão      -> alvo label_proficiencia, label_alfabetizado FORA
+    modelo de classificação  -> alvo label_alfabetizado,  label_proficiencia FORA
+
+Usar uma como feature da outra dá AUC 1,0. ``roles.VAZAMENTO_POR_ALVO`` declara
+isso, e é de lá que o ``features/`` deve ler — não daqui.
+
+O prefixo ``label_`` é o mesmo de ``label_alfabetizado``: as duas são alvos, e
+nomear igual o que cumpre o mesmo papel é o que impede alguém de tratar uma
+delas como preditor por distração de leitura.
 
 The one predictor that stays is ``dependencia_administrativa`` (2 = estadual,
 3 = municipal). It names the network the school belongs to, is known long
@@ -59,6 +85,10 @@ COLS_ALUNO = [
     "id_escola",
     "id_aluno",
     "dependencia_administrativa",
+    # A NOTA vem antes do RÓTULO porque é ela a medição: label_alfabetizado é
+    # label_proficiencia >= CORTE_PROFICIENCIA, e ler a derivada antes da origem
+    # inverte a leitura da tabela.
+    "label_proficiencia",
     "label_alfabetizado",
 ]
 
@@ -186,10 +216,14 @@ def transform_ufs(silver_uf: pd.DataFrame, silver_meta: pd.DataFrame, gold_ts) -
 
 
 def transform_aluno(silver_alunos: pd.DataFrame, gold_ts) -> pd.DataFrame:
-    """``ts_aluno`` reduced to foreign keys, the network, and the target.
+    """``ts_aluno`` reduced to foreign keys, the network, and the two targets.
 
     Rows without ``proficiencia`` have no defined label, so they are dropped
-    here rather than carried into training as nulls.
+    here rather than carried into training as nulls. O mesmo filtro serve aos
+    dois alvos: sem nota não há nem rótulo nem regressão.
+
+    ``label_alfabetizado`` e ``label_proficiencia`` são alvos alternativos, não
+    features um do outro — ver o docstring do módulo e ``roles.PAPEIS_ALUNO``.
     """
     base = silver_alunos.loc[
         silver_alunos["proficiencia"].notna() & silver_alunos["alfabetizado"].notna()
@@ -207,6 +241,7 @@ def transform_aluno(silver_alunos: pd.DataFrame, gold_ts) -> pd.DataFrame:
             "label_alfabetizado": pd.to_numeric(base["alfabetizado"], errors="coerce").astype(
                 "Int64"
             ),
+            "label_proficiencia": pd.to_numeric(base["proficiencia"], errors="coerce"),
         }
     )
     return add_gold_metadata(out[COLS_ALUNO], gold_ts)

@@ -10,13 +10,41 @@ municipal and state tables — and to FUNDEB, Censo Escolar and IBGE — on the
 keys below, producing ``processed/base_analitica``.
 """
 
+# Os DOIS alvos da gold/aluno. São a mesma medição em duas escalas:
+# ``label_alfabetizado == (label_proficiencia >= CORTE_PROFICIENCIA)`` bate em
+# 100,0000% das linhas. Logo são alternativos, nunca simultâneos.
+ALVO_CLASSIFICACAO = "label_alfabetizado"
+ALVO_REGRESSAO = "label_proficiencia"
+
 PAPEIS_ALUNO = {
-    "alvo": ["label_alfabetizado"],
+    "alvo": [ALVO_CLASSIFICACAO, ALVO_REGRESSAO],
     "identificador": ["ano", "id_uf", "id_municipio", "id_escola", "id_aluno"],
     "vazamento": [],
     "constante": [],
     "features": ["dependencia_administrativa"],
 }
+
+# O vazamento aqui não é uma lista fixa: ele DEPENDE de qual alvo se escolheu.
+# Modelar a nota com o rótulo dentro (ou vice-versa) dá AUC 1,0 / R² 1,0 — a
+# resposta entrando pela janela. O ``features/`` monta a matriz assim:
+#
+#     alvo = PAPEIS_ALUNO["alvo"][0]                      # ou [1]
+#     fora = set(PAPEIS_ALUNO["identificador"]) | set(VAZAMENTO_POR_ALVO[alvo])
+#     X = df.drop(columns=[alvo, *fora])
+#
+# Escrever a lista na mão em cada notebook é como isso se perde.
+VAZAMENTO_POR_ALVO = {
+    ALVO_CLASSIFICACAO: [ALVO_REGRESSAO],
+    ALVO_REGRESSAO: [ALVO_CLASSIFICACAO],
+}
+
+# Por que a nota entrou como segundo alvo (EDA de 04-05/09/2026):
+# com as mesmas features e o mesmo grão (município+rede), o teto do oráculo é
+# +6,4 pontos de acurácia na binária contra R² de 19,5% na contínua. A
+# informação é a mesma; a acurácia é que não a expressa. E o corte 743 cai no
+# percentil 41,6 — errar a nota por 10 pontos troca a classe de 17% dos alunos.
+# Prever a nota e cortar depois recupera o classificador E devolve o limiar
+# como parâmetro ajustável. O caminho inverso não existe.
 
 # How join.py attaches each context table to gold/aluno.
 CHAVES_JOIN = {

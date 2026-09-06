@@ -18,3 +18,9 @@ def run_pipeline(*, skip_download: bool = False) -> None:
     run_silver()
     run_gold()
     logger.success("Pipeline INEP concluído: tabelas Gold em data/processed.")
+
+
+if __name__ == "__main__":
+    import sys
+
+    run_pipeline(skip_download="--skip-download" in sys.argv)

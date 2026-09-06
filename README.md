@@ -28,11 +28,9 @@ Tabelas Gold:
 - `indicadores_municipio` — taxa, meta, distância e atingimento por município
 - `indicadores_uf` — o mesmo recorte por UF
 - `aluno_contexto` — microdados com contexto municipal e `label_alfabetizado`
-- `aluno_joined` — `aluno_contexto` enriquecido com joins (ex.: ATU)
 
-Os dicionários `PAPEIS_ALUNO_CONTEXTO` e `PAPEIS_ALUNO_JOINED` em
-`src/preprocessing/roles.py` marcam `proficiencia` e `gap_proficiencia` como
-**vazamento** — não usar como feature.
+O dicionário `PAPEIS_ALUNO_CONTEXTO` em `src/preprocessing/inep/roles.py` marca
+`proficiencia` e `gap_proficiencia` como **vazamento** — não usar como feature.
 
 ### Como gerar os dados
 
@@ -86,9 +84,7 @@ make data
     │   ├── io.py               <- Parquet particionado, apply_schema
     │   ├── load.py             <- Load CSV/Parquet from raw/processed
     │   ├── pipeline.py         <- ColumnTransformer factory (impute/encode/scale)
-    │   ├── prepare.py          <- CLI (pipelines + join)
-    │   ├── join.py             <- Joins sobre aluno_contexto -> aluno_joined
-    │   ├── roles.py            <- Papéis de colunas para ML (contexto e joined)
+    │   ├── prepare.py          <- CLI (delega para inep.run_pipeline)
     │   └── inep/               <- Pipeline Medallion INEP Alfabetização
     │       ├── download.py     <- Download INEP + unzip seletivo
     │       ├── schemas.py      <- Contratos Bronze
@@ -96,6 +92,7 @@ make data
     │       ├── silver.py       <- Conformação semântica
     │       ├── gold.py         <- Tabelas analíticas
     │       ├── quality.py      <- Checks de qualidade
+    │       ├── roles.py        <- Papéis de colunas para ML
     │       └── run.py          <- Orquestrador download -> gold
     │
     ├── modeling

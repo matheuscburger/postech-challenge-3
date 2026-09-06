@@ -13,6 +13,13 @@ Logo, na base_analitica de um aluno do ano N:
 
 Se algum dia alguém remover o lag, a primeira asserção quebra com a mensagem
 exata do que passou a entrar.
+
+O FUNDEB segue a mesma ideia, marcando a propriedade que precisa ser verificável:
+
+    gold/nse_entes_federados.valor_nse == float(ano) + 0.7, e só para 2024/2025
+
+Ele prova ausência do ano corrente sem proxy — se alguém reintroduzir o proxy
+2023<-2024, a conferência de nulo quebra.
 """
 
 from __future__ import annotations
@@ -32,6 +39,9 @@ ANOS = [2023, 2024, 2025]
 MUNICIPIOS = [("3500001", 35, "SP"), ("3500002", 35, "SP"), ("3100001", 31, "MG")]
 ORFAO = ("9999999", 99, "ZZ")  # existe no aluno, não existe em nenhum contexto
 DEPS = {2: "Estadual", 3: "Municipal"}
+
+# Anos em que o FUNDEB publica NSE. 2023 fica de fora de propósito.
+ANOS_NSE = [2024, 2025]
 
 
 def montar(raiz: Path) -> None:
@@ -161,6 +171,44 @@ def montar(raiz: Path) -> None:
     atu["id_municipio"] = atu["id_municipio"].astype("string")
     write_parquet_partitioned(atu, raiz / "atu_municipios", "ano", overwrite_entity=True)
 
+    # --- gold/nse_entes_federados (FUNDEB) --------------------------------
+    # Município e UF na mesma tabela, distinguidos por tipo_ente, com o código
+    # IBGE num campo só — como na Gold real. ``ponderador_nse`` existe aqui e NÃO
+    # pode aparecer na saída: é derivado, e join_fundeb o deixa para trás.
+    # Só 2024/2025: 2023 não tem NSE, e não deve ganhar proxy.
+    nse_rows = [
+        {
+            "ano": ano,
+            "codigo_ente": int(mun),
+            "tipo_ente": "municipio",
+            "nome_ente": f"Cidade {mun}",
+            "sigla_uf": sig,
+            "valor_nse": float(ano) + 0.7,
+            "ponderador_nse": 1.0,
+        }
+        for ano in ANOS_NSE
+        for mun, _, sig in MUNICIPIOS
+    ] + [
+        {
+            "ano": ano,
+            "codigo_ente": uf,
+            "tipo_ente": "uf",
+            "nome_ente": f"Estado {sig}",
+            "sigla_uf": sig,
+            # Valor deslocado do de município: se os dois joins se cruzarem, a
+            # conferência vê.
+            "valor_nse": float(ano) + 0.3,
+            "ponderador_nse": 1.0,
+        }
+        for ano in ANOS_NSE
+        for uf, sig in {(uf, sig) for _, uf, sig in MUNICIPIOS}
+    ]
+    nse = pd.DataFrame(nse_rows)
+    nse["ano"] = nse["ano"].astype("Int64")
+    nse["codigo_ente"] = nse["codigo_ente"].astype("Int64")
+    nse["tipo_ente"] = nse["tipo_ente"].astype("string")
+    write_parquet_partitioned(nse, raiz / J.ENTIDADE_FUNDEB, "ano", overwrite_entity=True)
+
 
 def conferir(base: pd.DataFrame) -> None:
     falhas: list[str] = []
@@ -234,7 +282,28 @@ def conferir(base: pd.DataFrame) -> None:
         ),
     )
 
-    # 7. left join preservou o município órfão, com contexto nulo
+    # 7. FUNDEB: ano corrente, sem proxy em 2023, e sem a coluna derivada
+    nse_mun, nse_uf = J.FUNDEB_NSE_MUNICIPIO, J.FUNDEB_NSE_UF
+    com_nse = conhecido[conhecido["ano"].isin(ANOS_NSE)]
+    checar(
+        f"FUNDEB: {nse_mun} == ano + 0.7 (sem defasagem)",
+        bool((com_nse[nse_mun] == com_nse["ano"].astype("float64") + 0.7).all()),
+    )
+    checar(
+        f"FUNDEB: {nse_uf} == ano + 0.3 (UF não vazou para município)",
+        bool((com_nse[nse_uf] == com_nse["ano"].astype("float64") + 0.3).all()),
+    )
+    sem_nse = conhecido[~conhecido["ano"].isin(ANOS_NSE)]
+    checar(
+        "FUNDEB: 2023 nulo, sem proxy do ano seguinte",
+        bool(len(sem_nse) > 0 and sem_nse[[nse_mun, nse_uf]].isna().all().all()),
+        f"{len(sem_nse)} linhas em {sorted(set(sem_nse['ano']))}",
+    )
+    # ponderador_nse é rescala linear de valor_nse: coluna derivada não entra.
+    derivadas = [c for c in base.columns if "ponderador" in c]
+    checar("FUNDEB: ponderador_nse (derivado) ficou fora", not derivadas, str(derivadas))
+
+    # 8. left join preservou o município órfão, com contexto nulo
     orfao = base[base["id_municipio"] == ORFAO[0]]
     ctx = [c for c in base.columns if c.startswith("ctx_")]
     checar(
@@ -243,7 +312,7 @@ def conferir(base: pd.DataFrame) -> None:
         f"{len(orfao)} linhas, {len(ctx)} colunas ctx_*",
     )
 
-    # 8. o alvo continua intacto
+    # 9. o alvo continua intacto
     checar(
         "label_alfabetizado sem nulos",
         bool(base["label_alfabetizado"].notna().all()),
