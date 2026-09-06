@@ -1,7 +1,7 @@
 """Dry-run sintético de src/preprocessing/join.py.
 
 Não toca em data/. Monta tabelas falsas em um diretório temporário com valores
-escolhidos para que a defasagem seja verificável a olho nu:
+escolhidos para que cada propriedade seja verificável a olho nu:
 
     gold/municipio.taxa_alfabetizacao == float(ano)
     gold/municipio.meta               == float(ano) + 0.5
@@ -13,6 +13,23 @@ Logo, na base_analitica de um aluno do ano N:
 
 Se algum dia alguém remover o lag, a primeira asserção quebra com a mensagem
 exata do que passou a entrar.
+
+O mesmo desenho cobre as outras fontes:
+
+    gold/atlas.idhm         == marca do município (0.501/0.502/0.503), só 2010
+    gold/nse.valor_nse      == float(ano) + 0.7 (município) / + 0.3 (UF)
+    gold/nse.ponderador_nse == float(ano) + 0.07 (município) / + 0.03 (UF)
+
+O Atlas existe só no ano-base: se o join passar a casar por ``ano``, todas as
+colunas ``ctx_atlas_*`` viram nulo e a conferência acusa. O NSE existe só em
+2024-2025: 2023 tem de sair **nulo**, sem proxy — e há um controle negativo que
+reintroduz o proxy e exige que o guard pare o pipeline.
+
+Dois municípios modelam ausências que não são falha de join:
+
+    ORFAO     — não existe em contexto nenhum
+    POS_2010  — existe em tudo menos no Atlas (como os 6 municípios reais
+                criados depois do Censo 2010)
 """
 
 from __future__ import annotations
@@ -29,9 +46,19 @@ from src.preprocessing import join as J  # noqa: E402
 from src.preprocessing.io import read_parquet, write_parquet_partitioned  # noqa: E402
 
 ANOS = [2023, 2024, 2025]
+ANOS_NSE = [2024, 2025]  # o FUNDEB só publica estas edições
+ANO_BASE_ATLAS = 2010
+
 MUNICIPIOS = [("3500001", 35, "SP"), ("3500002", 35, "SP"), ("3100001", 31, "MG")]
+POS_2010 = ("4300001", 43, "RS")  # existe em tudo menos no Atlas
 ORFAO = ("9999999", 99, "ZZ")  # existe no aluno, não existe em nenhum contexto
+
+# Municípios que aparecem em todas as fontes exceto o Atlas.
+COM_CONTEXTO = [*MUNICIPIOS, POS_2010]
 DEPS = {2: "Estadual", 3: "Municipal"}
+
+# marca por município: 0.501, 0.502, 0.503 — identifica quem casou com quem
+MARCA_ATLAS = {mun: 0.500 + (i + 1) / 1000 for i, (mun, _, _) in enumerate(MUNICIPIOS)}
 
 
 def montar(raiz: Path) -> None:
@@ -39,7 +66,7 @@ def montar(raiz: Path) -> None:
     linhas = []
     i = 0
     for ano in ANOS:
-        for mun, uf, _ in [*MUNICIPIOS, ORFAO]:
+        for mun, uf, _ in [*COM_CONTEXTO, ORFAO]:
             for dep in DEPS:
                 for _ in range(2):
                     i += 1
@@ -77,7 +104,7 @@ def montar(raiz: Path) -> None:
             "nivel_alfabetizacao": float(ano) + 0.3,
         }
         for ano in ANOS
-        for mun, uf, sig in MUNICIPIOS
+        for mun, uf, sig in COM_CONTEXTO
     ]
     municipio = pd.DataFrame(mun_rows)
     municipio["ano"] = municipio["ano"].astype("Int64")
@@ -98,7 +125,7 @@ def montar(raiz: Path) -> None:
                 "percentual_participacao": float(ano) + 0.2,
             }
             for ano in ANOS
-            for uf, sig in {(uf, sig) for _, uf, sig in MUNICIPIOS}
+            for uf, sig in {(uf, sig) for _, uf, sig in COM_CONTEXTO}
         ]
     )
     ufs["ano"] = ufs["ano"].astype("Int64")
@@ -123,7 +150,7 @@ def montar(raiz: Path) -> None:
                 "renda_domiciliar_per_capita_media": 1500.0,
             }
             for ano in ANOS
-            for mun, uf, sig in MUNICIPIOS
+            for mun, uf, sig in COM_CONTEXTO
         ]
     )
     ibge["ano"] = ibge["ano"].astype("Int64")
@@ -134,12 +161,69 @@ def montar(raiz: Path) -> None:
         ibge, raiz / "populacao_municipios", "ano", overwrite_entity=True
     )
 
+    # --- gold/atlas_desenvolvimento_humano --------------------------------
+    # Só o ano-base 2010, e POS_2010 de fora: o Atlas acabou em 2010 e não
+    # conhece município criado depois. Cada indicador recebe marca + posição,
+    # então uma rotação no mapa de renome aparece na conferência.
+    atlas_rows = []
+    for mun, _, _ in MUNICIPIOS:
+        linha = {
+            "ano": ANO_BASE_ATLAS,
+            "id_municipio": mun,
+            "nome_municipio": f"Cidade {mun}",
+        }
+        for pos, col in enumerate(J.ATLAS_COLS):
+            linha[col] = MARCA_ATLAS[mun] + pos
+        atlas_rows.append(linha)
+    atlas = pd.DataFrame(atlas_rows)
+    atlas["ano"] = atlas["ano"].astype("Int64")
+    atlas["id_municipio"] = atlas["id_municipio"].astype("string")
+    write_parquet_partitioned(
+        atlas, raiz / J.ATLAS_ENTIDADE, "ano", overwrite_entity=True
+    )
+
+    # --- gold/nse_entes_federados (FUNDEB) --------------------------------
+    # Só 2024-2025, as edições que o INEP publica. 2023 tem de sair nulo.
+    nse_rows = []
+    for ano in ANOS_NSE:
+        for mun, _, sig in COM_CONTEXTO:
+            nse_rows.append(
+                {
+                    "ano": ano,
+                    "codigo_ente": int(mun),
+                    "tipo_ente": "municipio",
+                    "nome_ente": f"Cidade {mun}",
+                    "sigla_uf": sig,
+                    "valor_nse": float(ano) + 0.7,
+                    "ponderador_nse": float(ano) + 0.07,
+                }
+            )
+        for uf, sig in {(uf, sig) for _, uf, sig in COM_CONTEXTO}:
+            nse_rows.append(
+                {
+                    "ano": ano,
+                    "codigo_ente": uf,
+                    "tipo_ente": "uf",
+                    "nome_ente": sig,
+                    "sigla_uf": sig,
+                    "valor_nse": float(ano) + 0.3,
+                    "ponderador_nse": float(ano) + 0.03,
+                }
+            )
+    nse = pd.DataFrame(nse_rows)
+    nse["ano"] = nse["ano"].astype("Int64")
+    nse["codigo_ente"] = nse["codigo_ente"].astype("Int64")
+    nse["tipo_ente"] = nse["tipo_ente"].astype("string")
+    write_parquet_partitioned(
+        nse, raiz / J.FUNDEB_ENTIDADE, "ano", overwrite_entity=True
+    )
+
     # --- gold/atu_municipios (Censo Escolar) ------------------------------
     # Inclui ruído de propósito: linhas fora de localizacao="Total" e da rede
     # Federal. Sem o filtro de join_atu, validate="m:1" quebraria aqui.
     atu_rows = []
     for ano in ANOS:
-        for mun, _, sig in MUNICIPIOS:
+        for mun, _, sig in COM_CONTEXTO:
             for loc in ("Total", "Urbana", "Rural"):
                 for dep in ("Estadual", "Municipal", "Federal", "Privada"):
                     base = {
@@ -162,7 +246,7 @@ def montar(raiz: Path) -> None:
     write_parquet_partitioned(atu, raiz / "atu_municipios", "ano", overwrite_entity=True)
 
 
-def conferir(base: pd.DataFrame) -> None:
+def conferir(base: pd.DataFrame) -> list[str]:
     falhas: list[str] = []
 
     def checar(nome: str, ok: bool, detalhe: str = "") -> None:
@@ -234,7 +318,76 @@ def conferir(base: pd.DataFrame) -> None:
         ),
     )
 
-    # 7. left join preservou o município órfão, com contexto nulo
+    # 7. Atlas: fixo no ano-base, replicado em todos os anos, casado por município
+    com_atlas = conhecido[conhecido["id_municipio"] != POS_2010[0]]
+    esperado_atlas = com_atlas["id_municipio"].map(MARCA_ATLAS).astype("float64")
+    checar(
+        "Atlas: ctx_atlas_idhm bate com a marca do município",
+        bool((com_atlas["ctx_atlas_idhm"] == esperado_atlas).all()),
+        f"marcas {sorted(MARCA_ATLAS.values())}",
+    )
+    por_ano = com_atlas.groupby(["id_municipio", "ano"])["ctx_atlas_idhm"].first().unstack()
+    checar(
+        f"Atlas: mesmo valor de {ANO_BASE_ATLAS} nos {len(ANOS)} anos (replicação)",
+        bool(por_ano.nunique(axis=1).eq(1).all()),
+        f"{por_ano.shape[0]} municípios x {por_ano.shape[1]} anos",
+    )
+    ultima = J.ATLAS_COLS[-1]
+    checar(
+        f"Atlas: ctx_atlas_{ultima} == marca + {len(J.ATLAS_COLS) - 1} (renome não rotacionou)",
+        bool(
+            (com_atlas[f"ctx_atlas_{ultima}"] == esperado_atlas + (len(J.ATLAS_COLS) - 1)).all()
+        ),
+    )
+    cols_atlas = [f"ctx_atlas_{c}" for c in J.ATLAS_COLS]
+    pos = conhecido[conhecido["id_municipio"] == POS_2010[0]]
+    checar(
+        "Atlas: município pós-2010 fica nulo, mas mantém o resto do contexto",
+        bool(
+            len(pos) > 0
+            and pos[cols_atlas].isna().all().all()
+            and pos["ctx_ibge_area_km2"].notna().all()
+            and pos[J.COL_NSE_MUNICIPIO].notna().any()
+        ),
+        f"{len(pos)} linhas, {len(cols_atlas)} colunas ctx_atlas_ nulas",
+    )
+
+    # 8. FUNDEB: ano corrente, sem cruzar município com UF, e 2023 SEM PROXY
+    com_nse = conhecido[conhecido["ano"].isin(ANOS_NSE)]
+    checar(
+        f"FUNDEB: {J.COL_NSE_MUNICIPIO} == ano + 0.7 (ano corrente, sem lag)",
+        bool((com_nse[J.COL_NSE_MUNICIPIO] == com_nse["ano"].astype("float64") + 0.7).all()),
+    )
+    checar(
+        f"FUNDEB: {J.COL_NSE_UF} == ano + 0.3 (município e UF não se cruzaram)",
+        bool((com_nse[J.COL_NSE_UF] == com_nse["ano"].astype("float64") + 0.3).all()),
+    )
+    checar(
+        "FUNDEB: ponderador chegou nas duas colunas certas",
+        bool(
+            (
+                com_nse["ctx_fundeb_ponderador_nse_municipio"]
+                == com_nse["ano"].astype("float64") + 0.07
+            ).all()
+            and (
+                com_nse["ctx_fundeb_ponderador_nse_uf"]
+                == com_nse["ano"].astype("float64") + 0.03
+            ).all()
+        ),
+    )
+    sem_nse = conhecido[~conhecido["ano"].isin(ANOS_NSE)]
+    cols_nse = [c for c in base.columns if c.startswith("ctx_fundeb_")]
+    checar(
+        "FUNDEB: 2023 nulo, sem proxy",
+        bool(len(sem_nse) > 0 and sem_nse[cols_nse].isna().all().all()),
+        f"{len(sem_nse)} linhas, {len(cols_nse)} colunas ctx_fundeb_",
+    )
+    checar(
+        "FUNDEB: nenhuma coluna de flag de proxy sobrou",
+        not [c for c in base.columns if "proxy" in c],
+    )
+
+    # 9. left join preservou o município órfão, com contexto nulo
     orfao = base[base["id_municipio"] == ORFAO[0]]
     ctx = [c for c in base.columns if c.startswith("ctx_")]
     checar(
@@ -243,20 +396,42 @@ def conferir(base: pd.DataFrame) -> None:
         f"{len(orfao)} linhas, {len(ctx)} colunas ctx_*",
     )
 
-    # 8. o alvo continua intacto
+    # 10. o alvo continua intacto
     checar(
         "label_alfabetizado sem nulos",
         bool(base["label_alfabetizado"].notna().all()),
     )
+    return falhas
 
-    print()
-    if falhas:
-        raise SystemExit(f"FALHAS: {falhas}")
-    print(f"Todas as conferências passaram. base_analitica: "
-          f"{len(base):,} linhas x {base.shape[1]} colunas")
-    print("\nColunas de contexto criadas:")
-    for c in ctx:
-        print(f"  {c}")
+
+def conferir_guard(raiz: Path) -> list[str]:
+    """Controle negativo: reintroduzir o proxy tem de parar o pipeline.
+
+    É a regressão da decisão de 06/09/2026 — NSE é medição de período, e
+    carregar 2024 para trás inventa um ponto da série.
+    """
+    falhas: list[str] = []
+    print("\n=== Controle negativo ===")
+
+    alunos = read_parquet(raiz / "aluno" / "ano=2023")
+    original = J._preparar_nse_municipio
+
+    def com_proxy(nse: pd.DataFrame) -> pd.DataFrame:
+        base = original(nse)
+        proxy = base.loc[base["ano"] == min(ANOS_NSE)].copy()
+        proxy["ano"] = 2023
+        return pd.concat([base, proxy], ignore_index=True)
+
+    J._preparar_nse_municipio = com_proxy
+    try:
+        J.join_fundeb(alunos)
+        print("  [FALHA] guard não acusou o proxy 2023 <- 2024")
+        falhas.append("guard do proxy do FUNDEB")
+    except AssertionError as erro:
+        print(f"  [OK  ] guard acusou o proxy 2023 <- 2024 — {erro}")
+    finally:
+        J._preparar_nse_municipio = original
+    return falhas
 
 
 def main() -> None:
@@ -266,7 +441,17 @@ def main() -> None:
         montar(raiz)
         J.run_join()
         base = read_parquet(raiz / J.ENTIDADE_DESTINO)
-        conferir(base)
+
+        falhas = conferir(base) + conferir_guard(raiz)
+
+        print()
+        if falhas:
+            raise SystemExit(f"FALHAS: {falhas}")
+        ctx = [c for c in base.columns if c.startswith("ctx_")]
+        print(
+            f"Todas as conferências passaram. base_analitica: "
+            f"{len(base):,} linhas x {base.shape[1]} colunas ({len(ctx)} de contexto)"
+        )
 
 
 if __name__ == "__main__":

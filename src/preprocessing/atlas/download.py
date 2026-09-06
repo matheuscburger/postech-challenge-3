@@ -1,56 +1,37 @@
 """Download layer: Atlas do Desenvolvimento Humano.
 
-Diferente das outras fontes (INEP, FUNDEB, Censo Escolar, IBGE), o Atlas não
-tem um único endpoint automatizável para todo o dado necessário:
+O Atlas não tem API: o dado é publicado como planilha em ``atlasbrasil.org.br``,
+que bloqueia acesso automatizado. As duas saídas eram:
 
-  - `municipal_raw.csv` (usado só para nome_municipio) — é uma réplica
-    pública em CSV no GitHub, **baixável automaticamente** via HTTP.
-  - `municipio_raw.csv` (fonte primária dos 35 indicadores, Base dos Dados
-    / dataset mundo_onu.adh) — a Base dos Dados distribui esse dado via
-    BigQuery, o que exige uma conta Google Cloud autenticada por pessoa
-    (`pip install basedosdados` + billing project). Não é um download HTTP
-    simples, e pedir que cada colega configure uma conta GCP só para rodar
-    este pipeline localmente não vale o custo — por isso esse arquivo
-    continua sendo um passo manual, documentado no README principal.
+  - **Base dos Dados** (dataset ``mundo_onu.adh``) — distribui o dado por
+    BigQuery, o que exige conta Google Cloud autenticada e billing project por
+    pessoa (`pip install basedosdados`). Não é download HTTP, então virava um
+    passo manual por colega, e um CSV com o dialeto errado colocado no lugar
+    passava batido pela checagem de existência e só quebrava na Bronze.
+  - **Espelho público em CSV** (``github.com/mauriciocramos/IDHM``) — réplica
+    fiel do mesmo arquivo do PNUD/IPEA/FJP, baixável por HTTP simples, sem
+    conta e sem token. Traz as 237 colunas com as siglas originais do Atlas e
+    as três coortes do índice (1991, 2000, 2010).
 
-Este módulo automatiza o que dá para automatizar (o CSV legado do GitHub) e
-falha de forma clara e acionável quando o arquivo manual não está presente,
-em vez de falhar silenciosamente lá na frente, na camada bronze.
+Este módulo usa o espelho: o pipeline do Atlas roda de ponta a ponta em
+qualquer máquina, sem passo manual, igual às outras fontes do projeto.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 from loguru import logger
 import requests
 from requests.exceptions import RequestException
 
 from src.config import EXTERNAL_DATA_DIR, MAX_DOWNLOAD_ATTEMPTS
-import time
+from src.preprocessing.atlas.schemas import ARQUIVO_BRONZE
 
 EXTERNAL_DIR = EXTERNAL_DATA_DIR / "atlas_desenvolvimento_humano"
 
-URL_MUNICIPAL_LEGADO = "https://raw.githubusercontent.com/mauriciocramos/IDHM/master/municipal.csv"
-
-INSTRUCOES_MUNICIPIO_RAW = f"""
-{EXTERNAL_DIR / "municipio_raw.csv"} não encontrado.
-
-Esse arquivo (fonte primária dos indicadores do Atlas) vem da Base dos
-Dados (basedosdados.org, dataset mundo_onu.adh), que distribui os dados via
-BigQuery — exige uma conta Google Cloud autenticada, então não dá para
-baixar automaticamente aqui.
-
-Passo a passo para obter manualmente:
-  1. Acesse https://basedosdados.org/dataset/mundo-onu-adh
-  2. Baixe a tabela "municipio" (ou rode a query via `pip install basedosdados`,
-     ver documentação do pacote para autenticação)
-  3. Salve o arquivo como municipio_raw.csv
-  4. Coloque em: {EXTERNAL_DIR}
-
-Ver também a seção "Atlas do Desenvolvimento Humano" no README principal do
-projeto para o passo a passo completo.
-""".strip()
+URL_ATLAS_MUNICIPAL = "https://raw.githubusercontent.com/mauriciocramos/IDHM/master/municipal.csv"
 
 
 def _baixar_com_retry(url: str, destino: Path, espera: int = 5) -> Path:
@@ -68,7 +49,9 @@ def _baixar_com_retry(url: str, destino: Path, espera: int = 5) -> Path:
             return destino
         except RequestException as erro:
             if tentativa == MAX_DOWNLOAD_ATTEMPTS:
-                logger.error("Falha após {} tentativas: {} -> {}", MAX_DOWNLOAD_ATTEMPTS, url, destino)
+                logger.error(
+                    "Falha após {} tentativas: {} -> {}", MAX_DOWNLOAD_ATTEMPTS, url, destino
+                )
                 raise
             logger.warning(
                 "Tentativa {}/{} falhou ({}). Retry em {}s...",
@@ -78,30 +61,21 @@ def _baixar_com_retry(url: str, destino: Path, espera: int = 5) -> Path:
     raise RuntimeError(f"Download falhou: {url}")
 
 
-def baixar_municipal_legado() -> Path:
-    """Baixa automaticamente o CSV legado (usado só para nome_municipio)."""
-    destino = EXTERNAL_DIR / "municipal_raw.csv"
-    logger.info("Baixando fonte legada (nome_municipio) de {} -> {}", URL_MUNICIPAL_LEGADO, destino)
-    return _baixar_com_retry(URL_MUNICIPAL_LEGADO, destino)
-
-
-def verificar_municipio_raw() -> None:
-    """Verifica se o arquivo manual (Base dos Dados) já foi colocado; se não, orienta."""
-    destino = EXTERNAL_DIR / "municipio_raw.csv"
-    if not destino.exists():
-        raise FileNotFoundError(INSTRUCOES_MUNICIPIO_RAW)
-    logger.info("municipio_raw.csv encontrado: {}", destino)
+def baixar_municipal_atlas() -> Path:
+    """Baixa o CSV municipal do Atlas a partir do espelho público."""
+    destino = EXTERNAL_DIR / ARQUIVO_BRONZE
+    logger.info("Baixando Atlas municipal de {} -> {}", URL_ATLAS_MUNICIPAL, destino)
+    return _baixar_com_retry(URL_ATLAS_MUNICIPAL, destino)
 
 
 def baixar_dados_atlas() -> None:
-    """Orquestra a etapa de download: automatiza o que dá, valida o que é manual."""
+    """Etapa de download do Atlas: um arquivo, automático."""
     logger.info("Iniciando etapa de download do Atlas do Desenvolvimento Humano...")
     EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
 
-    baixar_municipal_legado()
-    verificar_municipio_raw()
+    baixar_municipal_atlas()
 
-    logger.success("Etapa de download do Atlas concluída (1 automático, 1 manual verificado).")
+    logger.success("Etapa de download do Atlas concluída.")
 
 
 if __name__ == "__main__":

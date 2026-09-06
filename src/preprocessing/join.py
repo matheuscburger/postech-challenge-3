@@ -37,15 +37,35 @@ alunos.
     O join usa só ``id_municipio`` — o mesmo valor de 2010 é usado para todos
     os anos de ``aluno`` (2023-2025), assumindo que indicadores
     socioeconômicos municipais mudam devagar.
-  - FUNDEB: Nível Socioeconômico (NSE) por ente federado. Só cobre 2024-2025;
-    o ano de 2023 recebe o valor de 2024 como proxy (NSE muda pouco ano a
-    ano) — a coluna ``ctx_fundeb_nse_municipio_proxy_2023`` marca quais
-    linhas usaram o proxy. O NSE da UF entra como coluna separada
-    (``ctx_fundeb_nse_uf``), além do NSE do município — não é usado como
-    fallback.
+  - FUNDEB: Nível Socioeconômico (NSE) por ente federado. O INEP publica uma
+    edição por exercício financeiro e existem duas — 2024 e 2025. **2023 fica
+    nulo, sem proxy.** O NSE é medição refeita a cada edição, não atributo
+    estrutural: entre 2024 e 2025 nenhum dos 5.568 municípios repete valor
+    (|Δ| mediano de 7,3% de um desvio-padrão, p95 de 26%, máximo acima de um
+    desvio). Carregar 2024 para trás inventaria um ponto da série — mesma
+    regra que deixa ``populacao_residente`` nulo em 2023 na Gold do IBGE, e o
+    oposto do que se faz com ``area_km2`` e com o Atlas, que não são séries.
+    O NSE da UF entra como coluna separada (``ctx_fundeb_nse_uf``), além do
+    NSE do município — não é usado como fallback.
+
+Um ano por vez
+--------------
+``run_join`` processa uma partição de ``aluno`` por vez, não a base inteira.
+São 5,3 milhões de alunos e 86 colunas no fim da cadeia: o frame completo passa
+de 3 GB, e cada ``merge`` mantém o frame antigo e o novo vivos ao mesmo tempo,
+então o pico dobra. Em WSL isso estoura a memória e o processo é morto no meio
+do join — sem traceback, só a sessão caindo.
+
+O recorte por ano é exato, não uma aproximação: todo join aqui é left-join por
+chaves que ou incluem ``ano`` ou independem dele (Atlas), e ``validate="m:1"``
+olha a unicidade do lado direito, que não é fatiado. Partição a partição dá o
+mesmo resultado com um terço do pico, e ``base_analitica`` já é gravada
+particionada por ano de qualquer forma.
 """
 
 from __future__ import annotations
+
+import gc
 
 from loguru import logger
 import pandas as pd
@@ -59,7 +79,11 @@ from src.preprocessing.inep.roles import (
     COLUNAS_LAG_OBRIGATORIO,
     COLUNAS_SEM_LAG,
 )
-from src.preprocessing.io import read_parquet, write_parquet_partitioned
+from src.preprocessing.io import (
+    list_partition_values,
+    read_parquet,
+    write_parquet_partitioned,
+)
 
 ENTIDADE_ALUNO = "aluno"
 ENTIDADE_DESTINO = "base_analitica"
@@ -129,18 +153,31 @@ ATLAS_COL_MATCH = ATLAS_RENAME["idhm"]
 
 # --- FUNDEB (NSE) ------------------------------------------------------------
 FUNDEB_ENTIDADE = "nse_entes_federados"
-ANO_PROXY_FUNDEB = 2023
-ANO_BASE_PROXY_FUNDEB = 2024
+COL_NSE_MUNICIPIO = "ctx_fundeb_nse_municipio"
+COL_NSE_UF = "ctx_fundeb_nse_uf"
+
+
+# Taxas de match acumuladas entre os chunks. O contrato de cada join é
+# ``f(alunos) -> DataFrame``, sem parâmetro extra, então a consolidação dos anos
+# passa por aqui em vez de entrar na assinatura de todo mundo.
+_MATCH_ACUMULADO: dict[str, list[int]] = {}
 
 
 def _logar_match(rotulo: str, out: pd.DataFrame, coluna: str) -> None:
-    """Taxa de match global e por ano — a quebra por ano é o que expõe lag vazio."""
-    logger.info(
-        "Taxa de match {} ({}) : {:.1%}", rotulo, coluna, float(out[coluna].notna().mean())
-    )
-    por_ano = out.groupby("ano", dropna=False)[coluna].apply(lambda s: float(s.notna().mean()))
-    for ano, taxa in por_ano.items():
-        logger.info("    {} : {:.1%}", ano, taxa)
+    """Taxa de match do chunk, somando no acumulado que ``run_join`` consolida.
+
+    A quebra por ano é o que expõe lag vazio; como cada chunk é um ano, ela sai
+    naturalmente — uma linha por join por ano.
+    """
+    chave = f"{rotulo} ({coluna})"
+    casados = int(out[coluna].notna().sum())
+    total = len(out)
+
+    acumulado = _MATCH_ACUMULADO.setdefault(chave, [0, 0])
+    acumulado[0] += casados
+    acumulado[1] += total
+
+    logger.info("    match {} : {:.2%}", chave, casados / total if total else 0.0)
 
 
 def _defasar(gold: pd.DataFrame, chaves: list[str], cols: list[str], prefixo: str) -> pd.DataFrame:
@@ -185,6 +222,23 @@ def _join_inep(alunos: pd.DataFrame, entidade: str, rotulo: str) -> pd.DataFrame
     return out
 
 
+def _com_chave_municipio(alunos: pd.DataFrame) -> pd.DataFrame:
+    """``alunos`` com ``id_municipio`` normalizado — sem copiar se já estiver.
+
+    ``gold/aluno`` publica a coluna como string de 7 dígitos, então o caminho
+    normal é não copiar nada e não realocar array de string nenhum. A
+    normalização continua como rede para quem chamar o join com um frame de
+    outra origem — só que agora ela custa uma varredura de inteiros em vez de
+    reconstruir 2 milhões de strings e duplicar o frame, duas vezes por chunk
+    (Atlas e FUNDEB). Era esse par de cópias que estourava a memória no meio da
+    cadeia, quando o frame já passou de 40 colunas.
+    """
+    ids = alunos["id_municipio"]
+    if ids.dtype == "string" and bool(ids.str.len().eq(7).all()):
+        return alunos
+    return alunos.assign(id_municipio=ids.astype("string").str.zfill(7))
+
+
 def join_atu(alunos: pd.DataFrame) -> pd.DataFrame:
     """Left-join métricas municipais do Censo Escolar ATU em ``alunos``."""
     atu = read_parquet(PROCESSED_DATA_DIR / "atu_municipios")
@@ -199,8 +253,7 @@ def join_atu(alunos: pd.DataFrame) -> pd.DataFrame:
         .copy()
     )
 
-    out = alunos.copy()
-    out["_dep_atu"] = out["dependencia_administrativa"].map(MAP_DEP_ALUNO_ATU)
+    out = alunos.assign(_dep_atu=alunos["dependencia_administrativa"].map(MAP_DEP_ALUNO_ATU))
     out = out.merge(atu_join, on=JOIN_KEYS, how="left", validate="m:1")
     out = out.drop(columns=["_dep_atu"])
 
@@ -223,8 +276,7 @@ def join_atlas(alunos: pd.DataFrame) -> pd.DataFrame:
     )
     atlas_join["id_municipio"] = atlas_join["id_municipio"].astype("string").str.zfill(7)
 
-    out = alunos.copy()
-    out["id_municipio"] = out["id_municipio"].astype("string").str.zfill(7)
+    out = _com_chave_municipio(alunos)
     out = out.merge(atlas_join, on="id_municipio", how="left", validate="m:1")
 
     _logar_match("Atlas", out, ATLAS_COL_MATCH)
@@ -232,73 +284,91 @@ def join_atlas(alunos: pd.DataFrame) -> pd.DataFrame:
 
 
 def _preparar_nse_municipio(nse: pd.DataFrame) -> pd.DataFrame:
-    """Filtra tipo_ente == 'municipio' e aplica o proxy 2023 <- 2024."""
+    """Filtra ``tipo_ente == 'municipio'`` e renomeia para o prefixo da fonte.
+
+    Sem proxy: o ano que o FUNDEB não publicou simplesmente não tem linha aqui,
+    e o left-join deixa nulo.
+    """
     nse_mun = nse.loc[nse["tipo_ente"] == "municipio"].copy()
     nse_mun["id_municipio"] = nse_mun["codigo_ente"].astype("Int64").astype("string").str.zfill(7)
 
-    base = nse_mun[["ano", "id_municipio", "valor_nse", "ponderador_nse"]].copy()
-    base["nse_proxy"] = False
-
-    proxy = base.loc[base["ano"] == ANO_BASE_PROXY_FUNDEB].copy()
-    proxy["ano"] = ANO_PROXY_FUNDEB
-    proxy["nse_proxy"] = True
-
-    resultado = pd.concat([base, proxy], ignore_index=True)
-    return resultado.rename(
+    return nse_mun[["ano", "id_municipio", "valor_nse", "ponderador_nse"]].rename(
         columns={
-            "valor_nse": "ctx_fundeb_nse_municipio",
+            "valor_nse": COL_NSE_MUNICIPIO,
             "ponderador_nse": "ctx_fundeb_ponderador_nse_municipio",
-            "nse_proxy": "ctx_fundeb_nse_municipio_proxy_2023",
         }
     )
 
 
 def _preparar_nse_uf(nse: pd.DataFrame) -> pd.DataFrame:
-    """Filtra tipo_ente == 'uf' e aplica o proxy 2023 <- 2024.
+    """Filtra ``tipo_ente == 'uf'`` e renomeia para o prefixo da fonte.
 
     ``codigo_ente`` já é Int64 para UF (ex.: 11, 35) — mesmo tipo de
     ``id_uf`` em ``gold/aluno``, então não há zero-padding aqui (diferente de
-    município, que é sempre string de 7 dígitos).
+    município, que é sempre string de 7 dígitos). Sem proxy, como o município.
     """
     nse_uf = nse.loc[nse["tipo_ente"] == "uf"].copy()
     nse_uf["id_uf"] = nse_uf["codigo_ente"].astype("Int64")
 
-    base = nse_uf[["ano", "id_uf", "valor_nse", "ponderador_nse"]].copy()
-    base["nse_proxy"] = False
-
-    proxy = base.loc[base["ano"] == ANO_BASE_PROXY_FUNDEB].copy()
-    proxy["ano"] = ANO_PROXY_FUNDEB
-    proxy["nse_proxy"] = True
-
-    resultado = pd.concat([base, proxy], ignore_index=True)
-    return resultado.rename(
+    return nse_uf[["ano", "id_uf", "valor_nse", "ponderador_nse"]].rename(
         columns={
-            "valor_nse": "ctx_fundeb_nse_uf",
+            "valor_nse": COL_NSE_UF,
             "ponderador_nse": "ctx_fundeb_ponderador_nse_uf",
-            "nse_proxy": "ctx_fundeb_nse_uf_proxy_2023",
         }
     )
+
+
+def _anos_sem_nse(out: pd.DataFrame, nse: pd.DataFrame, coluna: str, rotulo: str) -> list[int]:
+    """Anos que o FUNDEB não publicou têm de sair nulos — e continuar nulos.
+
+    Análogo ao ``populacao_imputada_em_ano_sem_estimativa`` da Gold do IBGE:
+    existe para que reintroduzir um proxy pare o pipeline, em vez de passar
+    despercebido como um número plausível na coluna certa. Devolve os anos sem
+    NSE para quem quiser logar.
+    """
+    publicados = set(pd.to_numeric(nse["ano"], errors="coerce").dropna().astype(int))
+    presentes = set(pd.to_numeric(out["ano"], errors="coerce").dropna().astype(int))
+
+    sem_nse = sorted(presentes - publicados)
+    for ano in sem_nse:
+        imputados = int(out.loc[out["ano"] == ano, coluna].notna().sum())
+        if imputados:
+            raise AssertionError(
+                f"{rotulo}: {imputados:,} linhas de {ano} com NSE preenchido, mas o FUNDEB "
+                f"não publicou NSE para {ano} (edições: {sorted(publicados)}). "
+                f"Carregar outro ano para trás inventaria um ponto da série."
+            )
+    return sem_nse
 
 
 def join_fundeb(alunos: pd.DataFrame) -> pd.DataFrame:
     """Left-join do NSE do FUNDEB (município e UF) em ``alunos``.
 
     Sem defasagem: o NSE é uma classificação socioeconômica do ente, não uma
-    medição da prova. O FUNDEB só cobre 2024-2025; o ano de 2023 recebe o
-    valor de 2024 como proxy — ver ``ctx_fundeb_nse_*_proxy_2023``.
+    medição da prova. E **sem proxy**: o INEP publica uma edição por exercício
+    financeiro, existem duas (2024 e 2025), e 2023 fica nulo. Ver a seção do
+    FUNDEB no topo do módulo para a medição que sustenta essa decisão.
     """
     nse = read_parquet(PROCESSED_DATA_DIR / FUNDEB_ENTIDADE)
     nse_mun = _preparar_nse_municipio(nse)
     nse_uf = _preparar_nse_uf(nse)
 
-    out = alunos.copy()
-    out["id_municipio"] = out["id_municipio"].astype("string").str.zfill(7)
+    out = _com_chave_municipio(alunos)
 
     out = out.merge(nse_mun, on=["ano", "id_municipio"], how="left", validate="m:1")
     out = out.merge(nse_uf, on=["ano", "id_uf"], how="left", validate="m:1")
 
-    _logar_match("FUNDEB município", out, "ctx_fundeb_nse_municipio")
-    _logar_match("FUNDEB UF", out, "ctx_fundeb_nse_uf")
+    # Antes do log de match, para que 0% não seja lido como merge quebrado.
+    sem_nse = _anos_sem_nse(out, nse, COL_NSE_MUNICIPIO, "FUNDEB município")
+    _anos_sem_nse(out, nse, COL_NSE_UF, "FUNDEB UF")
+    if sem_nse:
+        logger.info(
+            "    FUNDEB não publicou NSE para {} — contexto nulo por decisão, não falha de merge",
+            sem_nse,
+        )
+
+    _logar_match("FUNDEB município", out, COL_NSE_MUNICIPIO)
+    _logar_match("FUNDEB UF", out, COL_NSE_UF)
     return out
 
 
@@ -339,33 +409,79 @@ JOINS = (
 )
 
 
-def run_join() -> None:
-    """Lê ``aluno``, aplica ``JOINS`` em sequência e grava ``base_analitica``."""
-    logger.info("Iniciando joins sobre {}...", ENTIDADE_ALUNO)
-    alunos = read_parquet(PROCESSED_DATA_DIR / ENTIDADE_ALUNO)
+def _aplicar_joins(alunos: pd.DataFrame, rotulo: str) -> pd.DataFrame:
+    """Aplica ``JOINS`` em sequência, exigindo 1 linha por aluno no caminho todo."""
     linhas = len(alunos)
-    logger.info("{}: {:,} linhas x {} colunas", ENTIDADE_ALUNO, linhas, alunos.shape[1])
-
     for join_fn in JOINS:
-        logger.info("Aplicando {}...", join_fn.__name__)
+        logger.info("  aplicando {}...", join_fn.__name__)
         alunos = join_fn(alunos)
         if len(alunos) != linhas:
             raise AssertionError(
-                f"{join_fn.__name__} alterou a contagem de linhas: {linhas:,} -> {len(alunos):,}"
+                f"{join_fn.__name__} alterou a contagem de linhas em {rotulo}: "
+                f"{linhas:,} -> {len(alunos):,}"
             )
 
     colisoes = [c for c in alunos.columns if c.endswith(("_x", "_y"))]
     if colisoes:
-        raise AssertionError(f"colunas colidiram no merge: {colisoes}")
+        raise AssertionError(f"colunas colidiram no merge ({rotulo}): {colisoes}")
+    return alunos
 
+
+def _chunks(origem) -> list[tuple[str, object]]:
+    """Uma partição de ano por chunk; a base inteira se não houver partição."""
+    anos = sorted(list_partition_values(origem, "ano"))
+    if anos:
+        return [(f"ano={ano}", origem / f"ano={ano}") for ano in anos]
+    logger.warning("{} não está particionado por ano; processando de uma vez.", origem)
+    return [("base inteira", origem)]
+
+
+def run_join() -> None:
+    """Lê ``aluno`` ano a ano, aplica ``JOINS`` e grava ``base_analitica``.
+
+    Um chunk por vez — ver "Um ano por vez" no topo do módulo para o porquê.
+    """
+    origem = PROCESSED_DATA_DIR / ENTIDADE_ALUNO
     dest = PROCESSED_DATA_DIR / ENTIDADE_DESTINO
-    write_parquet_partitioned(alunos, dest, "ano", overwrite_entity=True)
+    chunks = _chunks(origem)
+    _MATCH_ACUMULADO.clear()
+
+    logger.info(
+        "Iniciando joins sobre {} em {} chunk(s): {}",
+        ENTIDADE_ALUNO,
+        len(chunks),
+        [rotulo for rotulo, _ in chunks],
+    )
+
+    total_linhas = 0
+    total_colunas = 0
+    for indice, (rotulo, caminho) in enumerate(chunks):
+        alunos = read_parquet(caminho)
+        logger.info("[{}] {:,} linhas x {} colunas", rotulo, len(alunos), alunos.shape[1])
+
+        alunos = _aplicar_joins(alunos, rotulo)
+
+        # overwrite_entity só no primeiro chunk: limpa partição órfã de execução
+        # anterior sem apagar o que este mesmo loop já gravou.
+        write_parquet_partitioned(alunos, dest, "ano", overwrite_entity=(indice == 0))
+
+        total_linhas += len(alunos)
+        total_colunas = alunos.shape[1]
+        logger.info("[{}] gravado: {:,} linhas x {} colunas", rotulo, len(alunos), total_colunas)
+
+        del alunos
+        gc.collect()
+
+    logger.info("Taxa de match consolidada:")
+    for chave, (casados, total) in _MATCH_ACUMULADO.items():
+        logger.info("    {:<44} : {:.2%}", chave, casados / total if total else 0.0)
+
     logger.success(
         "{} gravada em {}: {:,} linhas x {} colunas",
         ENTIDADE_DESTINO,
         dest,
-        len(alunos),
-        alunos.shape[1],
+        total_linhas,
+        total_colunas,
     )
 
 

@@ -1,16 +1,18 @@
 """Bronze layer: structural contract for Atlas do Desenvolvimento Humano.
 
-Diferente das outras fontes (INEP, FUNDEB, Censo Escolar), o Atlas não tem
-um endpoint de download automatizável a partir deste ambiente. Os arquivos
-de origem (municipio_raw.csv, uf_raw.csv, brasil_raw.csv) devem ser obtidos
-manualmente da Base dos Dados (basedosdados.org, dataset mundo_onu.adh) e
-colocados em data/external/atlas_desenvolvimento_humano/ antes de rodar
-este pipeline. Ver README do projeto para o passo a passo.
+Ingere o CSV do espelho público do Atlas como ele vem — 237 colunas, siglas
+originais, as três coortes (1991, 2000, 2010) — sem renomear nem filtrar.
+Seleção e tradução de nomes acontecem na Silver; aqui só entra o que a fonte
+publicou, mais os metadados de ingestão.
 
-nome_municipio é recuperado de uma fonte legada (municipal_raw.csv, réplica
-de github.com/mauriciocramos/IDHM), pois as tabelas da Base dos Dados só
-trazem o código IBGE. Essa fonte legada também deve estar em
-data/external/atlas_desenvolvimento_humano/.
+O arquivo é baixado automaticamente por ``download.py``: não há passo manual.
+
+Dialeto: separador ``;``, decimal ``,``, textos entre aspas (``DIALETO_BRONZE``
+em ``schemas.py``). Ler com o dialeto errado não estoura na primeira linha — as
+coortes têm quantidades diferentes de células vazias, então o parser atravessa
+1991 inteiro e só quebra na virada para 2000. Por isso a conferência de colunas
+logo após a leitura: é ela que transforma um ``ParserError`` no meio do arquivo
+em uma mensagem que diz qual arquivo está errado.
 """
 
 from __future__ import annotations
@@ -21,41 +23,57 @@ from loguru import logger
 import pandas as pd
 
 from src.config import BRONZE_DATA_DIR, EXTERNAL_DATA_DIR
-from src.preprocessing.atlas.schemas import ARQUIVOS_BRONZE
+from src.preprocessing.atlas.schemas import (
+    ARQUIVO_BRONZE,
+    COLUNAS_IDENTIFICACAO,
+    DIALETO_BRONZE,
+    INDICADORES,
+)
 from src.preprocessing.io import write_parquet_partitioned
 
 EXTERNAL_DIR = EXTERNAL_DATA_DIR / "atlas_desenvolvimento_humano"
-LEGADO_NOMES = EXTERNAL_DIR / "municipal_raw.csv"
+
+COLUNA_PARTICAO = "ANO"
 
 
 def _checar_arquivo(caminho) -> None:
     if not caminho.exists():
         raise FileNotFoundError(
-            f"{caminho} não encontrado. Baixe manualmente da Base dos Dados "
-            f"(basedosdados.org, dataset mundo_onu.adh) e coloque em {EXTERNAL_DIR}. "
-            f"Ver README do projeto para instruções."
+            f"{caminho} não encontrado. Rode o download do Atlas "
+            f"(`python -m src.preprocessing.atlas.download`) ou rode o pipeline "
+            f"sem `--skip-download`."
+        )
+
+
+def _checar_colunas(df: pd.DataFrame, caminho) -> None:
+    """Falha cedo e com nome próprio se o CSV não for o do Atlas."""
+    esperadas = [*COLUNAS_IDENTIFICACAO, *INDICADORES]
+    faltando = [c for c in esperadas if c not in df.columns]
+    if faltando:
+        raise AssertionError(
+            f"{caminho} não tem as colunas do Atlas: {faltando[:5]}"
+            f"{'...' if len(faltando) > 5 else ''} "
+            f"({len(faltando)} de {len(esperadas)} ausentes). "
+            f"Lido com sep='{DIALETO_BRONZE['sep']}' decimal='{DIALETO_BRONZE['decimal']}' "
+            f"-> {df.shape[1]} colunas. Esperado: o CSV municipal do espelho do Atlas "
+            f"(237 colunas, siglas como IDHM, T_ANALF11A14, PMPOB). "
+            f"Apague o arquivo e rode o download de novo."
         )
 
 
 def bronze_municipio(ingestion_ts) -> pd.DataFrame:
-    caminho = EXTERNAL_DIR / ARQUIVOS_BRONZE["municipio"]
+    caminho = EXTERNAL_DIR / ARQUIVO_BRONZE
     _checar_arquivo(caminho)
-    df = pd.read_csv(caminho, sep=",", decimal=".", encoding="utf-8")
-    df["_source_file"] = str(caminho)
-    df["_ingestion_timestamp"] = ingestion_ts
-    return df
-
-
-def bronze_nomes_municipio() -> pd.DataFrame:
-    """Recupera id_municipio -> nome_municipio da fonte legada."""
-    _checar_arquivo(LEGADO_NOMES)
-    df = pd.read_csv(LEGADO_NOMES, sep=";", decimal=",", encoding="utf-8")
+    df = pd.read_csv(caminho, **DIALETO_BRONZE)
     df.columns = [c.strip('"') for c in df.columns]
-    nomes = df[["Codmun7", "Município"]].drop_duplicates(subset=["Codmun7"])
-    nomes = nomes.rename(columns={"Codmun7": "id_municipio", "Município": "nome_municipio"})
-    nomes["id_municipio"] = nomes["id_municipio"].astype(str).str.zfill(7)
-    nomes["nome_municipio"] = nomes["nome_municipio"].str.strip().str.title()
-    return nomes
+    _checar_colunas(df, caminho)
+    # Concat em vez de duas atribuições: inserir coluna a coluna num frame de
+    # 237 colunas fragmenta os blocos internos e o pandas avisa.
+    meta = pd.DataFrame(
+        {"_source_file": str(caminho), "_ingestion_timestamp": ingestion_ts},
+        index=df.index,
+    )
+    return pd.concat([df, meta], axis=1)
 
 
 def run_bronze() -> None:
@@ -64,9 +82,18 @@ def run_bronze() -> None:
     logger.info("Iniciando camada Bronze Atlas do Desenvolvimento Humano...")
 
     municipio = bronze_municipio(ingestion_ts)
-    municipio["ano"] = pd.to_numeric(municipio["ano"], errors="coerce").astype("Int64")
-    write_parquet_partitioned(municipio, BRONZE_DATA_DIR / "atlas_municipio", "ano")
-    logger.info("atlas_municipio: {:,} linhas", len(municipio))
+    municipio[COLUNA_PARTICAO] = (
+        pd.to_numeric(municipio[COLUNA_PARTICAO], errors="coerce").astype("Int64")
+    )
+    write_parquet_partitioned(
+        municipio, BRONZE_DATA_DIR / "atlas_municipio", COLUNA_PARTICAO, overwrite_entity=True
+    )
+    logger.info(
+        "atlas_municipio: {:,} linhas x {} colunas | coortes: {}",
+        len(municipio),
+        municipio.shape[1],
+        sorted(municipio[COLUNA_PARTICAO].dropna().unique().tolist()),
+    )
 
     logger.success("Camada Bronze Atlas concluída.")
 

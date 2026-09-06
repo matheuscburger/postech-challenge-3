@@ -41,64 +41,61 @@ make data
 
 ## Atlas do Desenvolvimento Humano
 
-Diferente das outras fontes (INEP, FUNDEB, Censo Escolar, IBGE), o Atlas do
-Desenvolvimento Humano **não tem download automatizado** — o site oficial
-(`atlasbrasil.org.br`) bloqueia acesso automatizado (scraping), então os
-arquivos de origem precisam ser baixados manualmente uma vez, antes de
-rodar o pipeline.
-
-### De onde baixar
-
-Os dados vêm de duas fontes, cruzadas e validadas entre si (ver
-`src/preprocessing/atlas/schemas.py` para detalhes da validação):
-
-1. **Fonte primária — Base dos Dados** (dataset `mundo_onu.adh`):
-   - Acesse [basedosdados.org/dataset/mundo-onu-adh](https://basedosdados.org/dataset/mundo-onu-adh)
-   - Baixe a tabela **`municipio`** (indicadores municipais — IDHM e ~230
-     variáveis socioeconômicas)
-   - Salve como `municipio_raw.csv`
-
-2. **Fonte legada — apenas para nome do município** (a Base dos Dados só
-   traz o código IBGE, não o nome):
-   - [github.com/mauriciocramos/IDHM](https://github.com/mauriciocramos/IDHM)
-   - Baixe `municipal.csv`
-   - Renomeie para `municipal_raw.csv`
-
-### Onde colocar
-
-Crie a pasta (se não existir) e coloque os dois arquivos exatamente aqui:
-
-```
-data/external/atlas_desenvolvimento_humano/
-├── municipio_raw.csv
-└── municipal_raw.csv
-```
+O Atlas roda igual às outras fontes do projeto: sem passo manual, sem conta em
+serviço nenhum.
 
 ```bash
-mkdir -p data/external/atlas_desenvolvimento_humano
-# depois, mova/copie os dois arquivos baixados para essa pasta
+python -m pip install -r requirements.txt
+python -m src.preprocessing.atlas.run
 ```
 
-### Como rodar
+### De onde vem o dado
+
+O Atlas não tem API, e o site oficial (`atlasbrasil.org.br`) bloqueia acesso
+automatizado. O pipeline consome o **espelho público em CSV** mantido em
+[github.com/mauriciocramos/IDHM](https://github.com/mauriciocramos/IDHM) —
+réplica fiel do mesmo arquivo do PNUD/IPEA/Fundação João Pinheiro, baixável por
+HTTP simples. `download.py` busca `municipal.csv` e grava em
+`data/external/atlas_desenvolvimento_humano/municipal_raw.csv`.
+
+São 237 colunas com as siglas originais do Atlas (`IDHM`, `T_ANALF11A14`,
+`PMPOB`...) e as três coortes do índice — 1991, 2000 e 2010 —, 5.565 municípios
+em cada uma. A Bronze ingere o arquivo inteiro; a Silver seleciona os 35
+indicadores do contrato, traduz as siglas e recorta 2010.
+
+> **Por que não a Base dos Dados.** O dataset `mundo_onu.adh` traz as mesmas
+> variáveis, mas é distribuído por BigQuery: exige conta Google Cloud
+> autenticada e billing project por pessoa. Virava um passo manual por colega —
+> e um CSV com o dialeto errado colocado na pasta passava batido pela checagem
+> de existência e só quebrava lá na Bronze, com um `ParserError` na linha 5.567
+> que não dizia nada sobre a causa. O espelho eliminou os dois problemas.
+
+⚠️ O arquivo é publicado com separador `;` e decimal `,` (`DIALETO_BRONZE` em
+`schemas.py`). Lido com o dialeto errado ele **não** falha na primeira linha: as
+coortes têm quantidades diferentes de células vazias, então o parser atravessa
+1991 inteiro antes de quebrar. Por isso a Bronze confere as colunas logo após a
+leitura.
+
+### Como rodar o pipeline completo
 
 ```bash
 python -m pip install -r requirements.txt
 
-# 1. Gera a tabela Gold do Atlas (bronze -> silver -> gold)
-python -m src.preprocessing.atlas.run
+# Todas as fontes + join, de uma vez
+python -m src.preprocessing.prepare
 
-# 2. (Se ainda não rodou) Gera as outras tabelas Gold necessárias para o join
+# ou, fonte por fonte:
 python -m src.preprocessing.inep.run
 python -m src.preprocessing.fundeb.run
 python -m src.preprocessing.censoescolar.run
 python -m src.preprocessing.ibge.run
-
-# 3. Junta tudo (aluno + Atlas + FUNDEB + Censo Escolar + IBGE + INEP) em base_analitica
+python -m src.preprocessing.atlas.run
 python -m src.preprocessing.join
 ```
 
-O resultado final fica em `data/processed/base_analitica/` (particionado
-por ano), pronto para a etapa de modelagem.
+Use `--skip-download` para reaproveitar o que já está em `data/external` e
+`data/raw`. O resultado final fica em `data/processed/base_analitica/`
+(particionado por ano), pronto para a etapa de modelagem.
 
 ### O que o Atlas adiciona à `base_analitica`
 
@@ -108,10 +105,17 @@ até 1 e 5 anos), trabalho infantil, frequência escolar por idade,
 vulnerabilidade familiar, renda e desigualdade. Ver a lista completa em
 `src/preprocessing/atlas/schemas.py` (dicionário `INDICADORES`).
 
+Taxa de match contra `gold/aluno`: **99,96%**. Os 6 municípios sem dado foram
+criados depois do Censo 2010 e não existem no Atlas — ausência de origem, não
+falha de join: Mojuí dos Campos/PA, Pescaria Brava/SC, Balneário Rincão/SC,
+Pinto Bandeira/RS, Paraíso das Águas/MS e Boa Esperança do Norte/MT.
+
 ⚠️ **Limitação conhecida**: o Atlas está fixo no ano-base **2010** (Censo
 Demográfico) — o mesmo valor é usado para todos os anos de `aluno`
 (2023-2025), assumindo que indicadores socioeconômicos municipais mudam
-devagar. Documentar isso na seção de Limitações do relatório final.
+devagar. São 13 anos de defasagem: vale como contexto estrutural do município
+(quão escolarizado, quão pobre, quão desigual), não como medida contemporânea.
+Documentar isso na seção de Limitações do relatório final.
 
 ## Organização do Projeto
 
