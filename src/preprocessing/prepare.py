@@ -6,6 +6,7 @@ from src.preprocessing.censoescolar.run import run_pipeline as run_censoescolar
 from src.preprocessing.fundeb.run import run_pipeline as run_fundeb
 from src.preprocessing.ibge.run import run_pipeline as run_ibge
 from src.preprocessing.inep.run import run_pipeline as run_inep
+from src.preprocessing.join import run_join
 
 app = typer.Typer()
 
@@ -23,6 +24,7 @@ def main(
     run_fundeb(skip_download=skip_download)
     run_censoescolar(skip_download=skip_download)
     run_ibge(skip_download=skip_download)
+    run_join()
 
 
 if __name__ == "__main__":
