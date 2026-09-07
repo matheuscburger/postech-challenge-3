@@ -268,7 +268,12 @@ def join_atlas(alunos: pd.DataFrame) -> pd.DataFrame:
     (Censo Demográfico) — o join usa só ``id_municipio``, e o mesmo valor de
     2010 é replicado para todos os anos de ``alunos``.
     """
-    atlas = read_parquet(PROCESSED_DATA_DIR / ATLAS_ENTIDADE)
+    atlas_path = PROCESSED_DATA_DIR / ATLAS_ENTIDADE
+    if not atlas_path.exists():
+        logger.error(f"Arquivo {atlas_path} não encontrado, retornando alunos sem join do Atlas.")
+        return alunos
+
+    atlas = read_parquet(atlas_path)
     atlas_join = (
         atlas.loc[:, ["id_municipio", *ATLAS_COLS]]
         .rename(columns=ATLAS_RENAME)
