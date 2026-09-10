@@ -12,6 +12,8 @@ python-dotenv
 requests
 ruff
 scikit-learn
+scipy
+seaborn
 tqdm
 typer
 -e .
