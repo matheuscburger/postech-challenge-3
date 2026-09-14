@@ -1,4 +1,4 @@
-"""CLI that runs the local Medallion pipelines: download -> bronze -> silver -> gold."""
+"""CLI that runs the local Medallion pipelines: download -> bronze -> silver -> gold -> join."""
 
 import typer
 
@@ -20,12 +20,12 @@ def main(
         help="Reuse files already present in data/external and data/raw.",
     ),
 ):
-    """Ingest INEP, FUNDEB, Censo Escolar and IBGE data into data/processed."""
+    """Ingest INEP, FUNDEB, Censo Escolar, IBGE e Atlas em data/processed, depois junta tudo em base_analitica."""
     run_inep(skip_download=skip_download)
     run_fundeb(skip_download=skip_download)
     run_censoescolar(skip_download=skip_download)
     run_ibge(skip_download=skip_download)
-    run_atlas()
+    run_atlas(skip_download=skip_download)
     run_join()
 
 
