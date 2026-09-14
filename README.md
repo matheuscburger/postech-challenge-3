@@ -433,10 +433,19 @@ exige que o pipeline pare.
 
 ### Como gerar os dados
 
+O projeto usa [`uv`](https://docs.astral.sh/uv/) para gerenciar ambiente e
+dependências (`pyproject.toml` + `uv.lock`) — é a forma recomendada de rodar
+o projeto; instalar dependências manualmente com `pip` num ambiente à parte
+foi a origem de erros de ambiente para quem tentou de outra forma.
+
 ```bash
-python -m pip install -r requirements.txt
-make data
+uv sync
+uv run make data
 ```
+
+`uv sync` cria o `.venv` e instala exatamente as versões travadas em
+`uv.lock`. `uv run make data` executa o target `data` do `Makefile` dentro
+desse ambiente (equivalente a `python -m src.preprocessing.prepare`).
 
 ## Atlas do Desenvolvimento Humano
 
