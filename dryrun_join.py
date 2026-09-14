@@ -42,7 +42,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from src.config import CORTE_PROFICIENCIA  # noqa: E402
 from src.preprocessing import join as J  # noqa: E402
+from src.preprocessing.inep.roles import ALVO_CLASSIFICACAO, ALVO_REGRESSAO  # noqa: E402
 from src.preprocessing.io import read_parquet, write_parquet_partitioned  # noqa: E402
 
 ANOS = [2023, 2024, 2025]
@@ -78,6 +80,11 @@ def montar(raiz: Path) -> None:
                             "id_escola": f"{mun}9",
                             "id_aluno": f"A{i:06d}",
                             "dependencia_administrativa": dep,
+                            # A nota vem antes do rótulo, como em COLS_ALUNO, e
+                            # respeita o corte real: 700 < 743 <= 800, então
+                            # label_alfabetizado == (label_proficiencia >= corte)
+                            # vale por construção e a conferência 10 pode exigi-la.
+                            "label_proficiencia": 700.0 + (i % 2) * 100.0,
                             "label_alfabetizado": i % 2,
                         }
                     )
@@ -396,11 +403,30 @@ def conferir(base: pd.DataFrame) -> list[str]:
         f"{len(orfao)} linhas, {len(ctx)} colunas ctx_*",
     )
 
-    # 10. o alvo continua intacto
-    checar(
-        "label_alfabetizado sem nulos",
-        bool(base["label_alfabetizado"].notna().all()),
-    )
+    # 10. os DOIS alvos continuam intactos
+    #
+    # A regressão de 06/09/2026 foi exatamente esta: label_proficiencia entrou na
+    # gold/aluno e a base_analitica ficou sem ela, porque nada aqui exigia a
+    # coluna. Conferir só o rótulo deixa o segundo alvo cair em silêncio.
+    for alvo in (ALVO_CLASSIFICACAO, ALVO_REGRESSAO):
+        checar(
+            f"{alvo} sobreviveu ao join sem nulos",
+            bool(alvo in base.columns and base[alvo].notna().all()),
+            "coluna ausente" if alvo not in base.columns else "",
+        )
+
+    # ... e continuam sendo a mesma medição em duas escalas: se o join
+    # embaralhasse linhas, a identidade quebraria antes do nulo aparecer.
+    if ALVO_REGRESSAO in base.columns:
+        checar(
+            "os dois alvos seguem coerentes (rótulo == nota >= corte)",
+            bool(
+                (
+                    base[ALVO_CLASSIFICACAO].astype("Int64")
+                    == (base[ALVO_REGRESSAO] >= CORTE_PROFICIENCIA).astype("Int64")
+                ).all()
+            ),
+        )
     return falhas
 
 

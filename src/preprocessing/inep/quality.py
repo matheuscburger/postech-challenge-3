@@ -39,6 +39,18 @@ def _violations_expr(df: pd.DataFrame, nome: str) -> pd.Series:
     if nome == "label_nao_binario":
         label = df["label_alfabetizado"]
         return label.notna() & ~label.isin([0, 1])
+    if nome == "alvos_incoerentes":
+        # Agora que a Gold tem os DOIS alvos, a identidade que os liga pode ser
+        # conferida aqui e não só na Silver: label == (nota >= corte).
+        #
+        # Não é redundante com ``label_incoerente_com_corte``. Aquele confere a
+        # fonte (Silver); este confere que a Gold não desalinhou as duas colunas
+        # ao construí-las — um filtro aplicado a uma e não à outra, ou um reindex
+        # perdido, produziria exatamente esse desalinhamento em silêncio.
+        prof = pd.to_numeric(df["label_proficiencia"], errors="coerce")
+        label = df["label_alfabetizado"]
+        avaliavel = prof.notna() & label.notna()
+        return avaliavel & ((prof >= CORTE_PROFICIENCIA) != (label == 1))
     raise ValueError(f"Expressão de qualidade desconhecida: {nome}")
 
 
@@ -160,9 +172,14 @@ CHECKS_GOLD = {
         {"tipo": "not_null", "coluna": "id_uf", "critico": True},
         {"tipo": "not_null", "coluna": "id_escola", "critico": False},
         {"tipo": "not_null", "coluna": "label_alfabetizado", "critico": True},
+        # Segundo alvo. O filtro de transform_aluno já exige proficiencia não-nula,
+        # então nulo aqui significa que o filtro e a coluna se desencontraram.
+        {"tipo": "not_null", "coluna": "label_proficiencia", "critico": True},
+        {"tipo": "range", "coluna": "label_proficiencia", "valor": (0, 1500), "critico": False},
         {"tipo": "regex", "coluna": "id_municipio", "valor": r"^[0-9]{7}$", "critico": True},
         {"tipo": "unique", "coluna": ["ano", "id_aluno"], "critico": True},
         {"tipo": "expr", "nome": "dependencia_administrativa_invalida", "critico": True},
         {"tipo": "expr", "nome": "label_nao_binario", "critico": True},
+        {"tipo": "expr", "nome": "alvos_incoerentes", "critico": True},
     ],
 }

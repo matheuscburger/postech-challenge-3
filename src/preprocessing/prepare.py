@@ -2,11 +2,11 @@
 
 import typer
 
-from src.preprocessing.atlas.run import run_pipeline as run_atlas
 from src.preprocessing.censoescolar.run import run_pipeline as run_censoescolar
 from src.preprocessing.fundeb.run import run_pipeline as run_fundeb
 from src.preprocessing.ibge.run import run_pipeline as run_ibge
 from src.preprocessing.inep.run import run_pipeline as run_inep
+from src.preprocessing.atlas.run import run_pipeline as run_atlas
 from src.preprocessing.join import run_join
 
 app = typer.Typer()
