@@ -453,8 +453,8 @@ O Atlas roda igual às outras fontes do projeto: sem passo manual, sem conta em
 serviço nenhum.
 
 ```bash
-python -m pip install -r requirements.txt
-python -m src.preprocessing.atlas.run
+uv sync
+uv run python -m src.preprocessing.atlas.run
 ```
 
 ### De onde vem o dado
@@ -487,18 +487,18 @@ leitura.
 ### Como rodar o pipeline completo
 
 ```bash
-python -m pip install -r requirements.txt
+uv sync
 
 # Todas as fontes + join, de uma vez
-python -m src.preprocessing.prepare
+uv run python -m src.preprocessing.prepare
 
 # ou, fonte por fonte:
-python -m src.preprocessing.inep.run
-python -m src.preprocessing.fundeb.run
-python -m src.preprocessing.censoescolar.run
-python -m src.preprocessing.ibge.run
-python -m src.preprocessing.atlas.run
-python -m src.preprocessing.join
+uv run python -m src.preprocessing.inep.run
+uv run python -m src.preprocessing.fundeb.run
+uv run python -m src.preprocessing.censoescolar.run
+uv run python -m src.preprocessing.ibge.run
+uv run python -m src.preprocessing.atlas.run
+uv run python -m src.preprocessing.join
 ```
 
 Use `--skip-download` para reaproveitar o que já está em `data/external` e
