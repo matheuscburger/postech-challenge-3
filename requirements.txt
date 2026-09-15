@@ -12,6 +12,11 @@ python-dotenv
 requests
 ruff
 scikit-learn
+seaborn
+shap
+statsmodels
 tqdm
 typer
+visidata
+xlrd
 -e .
